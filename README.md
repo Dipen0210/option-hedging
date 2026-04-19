@@ -103,6 +103,8 @@ optionQ/
 
 ### Visual Representation
 
+<img width="356" height="688" alt="Screenshot 2026-04-19 at 12 04 45 PM" src="https://github.com/user-attachments/assets/795ebb84-4f05-4962-9b58-e7d81e86487b" />
+
 <img width="1470" height="835" alt="Screenshot 2026-04-19 at 12 05 11 PM" src="https://github.com/user-attachments/assets/3aca950d-3fe7-4220-9b73-293f7367f131" />
 
 <img width="584" height="662" alt="Screenshot 2026-04-19 at 12 05 59 PM" src="https://github.com/user-attachments/assets/93d43510-e4cb-454a-a2f1-661528723cbf" />
@@ -111,13 +113,8 @@ optionQ/
 
 <img width="1141" height="666" alt="Screenshot 2026-04-19 at 12 06 55 PM" src="https://github.com/user-attachments/assets/28e5ffcc-4a60-468a-85f6-09ad277c884c" />
 
-<img width="1074" height="602" alt="Screenshot 2026-04-19 at 12 07 28 PM" src="https://github.com/user-attachments/assets/4f6999b3-5e50-4645-a567-23401e56f581" />
-
 <img width="919" height="331" alt="Screenshot 2026-04-19 at 12 08 59 PM" src="https://github.com/user-attachments/assets/c05b3a33-5316-40d5-85dc-34d94266c9ac" />
 
-<img width="356" height="688" alt="Screenshot 2026-04-19 at 12 04 45 PM" src="https://github.com/user-attachments/assets/795ebb84-4f05-4962-9b58-e7d81e86487b" />
-
-<img width="578" height="747" alt="Screenshot 2026-04-18 at 7 11 40 PM" src="https://github.com/user-attachments/assets/964c2f31-b759-43ac-9ed4-766abddca4c3" />
 
 
 ## API Overview
