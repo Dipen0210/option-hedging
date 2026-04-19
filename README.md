@@ -99,36 +99,26 @@ optionQ/
 ### Prerequisites
 - Python 3.13
 - Node.js 18+
-- API keys: Anthropic (or Ollama running locally), Alpaca (optional), FRED (optional)
+- API keys: Anthropic (or llama-3 running locally), Alpaca (optional), FRED (optional)
 
-### Backend
+### Visual Representation
 
-```bash
-cd backend
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+<img width="1470" height="835" alt="Screenshot 2026-04-19 at 12 05 11 PM" src="https://github.com/user-attachments/assets/3aca950d-3fe7-4220-9b73-293f7367f131" />
 
-# Copy and fill in your keys
-cp .env.example .env             # edit ANTHROPIC_API_KEY, etc.
+<img width="584" height="662" alt="Screenshot 2026-04-19 at 12 05 59 PM" src="https://github.com/user-attachments/assets/93d43510-e4cb-454a-a2f1-661528723cbf" />
 
-# Run
-uvicorn backend.main:app --reload --port 8000
-```
+<img width="860" height="589" alt="Screenshot 2026-04-19 at 12 06 22 PM" src="https://github.com/user-attachments/assets/3bae9eb5-e48c-4440-b44c-ff27762aeff2" />
 
-Backend runs at `http://localhost:8000`. Interactive API docs at `http://localhost:8000/docs`.
+<img width="1141" height="666" alt="Screenshot 2026-04-19 at 12 06 55 PM" src="https://github.com/user-attachments/assets/28e5ffcc-4a60-468a-85f6-09ad277c884c" />
 
-### Frontend
+<img width="1074" height="602" alt="Screenshot 2026-04-19 at 12 07 28 PM" src="https://github.com/user-attachments/assets/4f6999b3-5e50-4645-a567-23401e56f581" />
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
+<img width="919" height="331" alt="Screenshot 2026-04-19 at 12 08 59 PM" src="https://github.com/user-attachments/assets/c05b3a33-5316-40d5-85dc-34d94266c9ac" />
 
-Frontend runs at `http://localhost:3000`.
+<img width="356" height="688" alt="Screenshot 2026-04-19 at 12 04 45 PM" src="https://github.com/user-attachments/assets/795ebb84-4f05-4962-9b58-e7d81e86487b" />
 
----
+<img width="578" height="747" alt="Screenshot 2026-04-18 at 7 11 40 PM" src="https://github.com/user-attachments/assets/964c2f31-b759-43ac-9ed4-766abddca4c3" />
+
 
 ## API Overview
 
