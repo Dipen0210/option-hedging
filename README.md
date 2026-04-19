@@ -112,8 +112,6 @@ optionQ/
 
 <img width="1141" height="666" alt="Screenshot 2026-04-19 at 12 06 55 PM" src="https://github.com/user-attachments/assets/28e5ffcc-4a60-468a-85f6-09ad277c884c" />
 
-<img width="919" height="331" alt="Screenshot 2026-04-19 at 12 08 59 PM" src="https://github.com/user-attachments/assets/c05b3a33-5316-40d5-85dc-34d94266c9ac" />
-
 
 
 ## API Overview
