@@ -1,1 +1,0 @@
-# regime — Market regime detection

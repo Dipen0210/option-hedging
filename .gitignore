@@ -47,3 +47,19 @@ logs/
 # Data (keep processed, ignore raw downloads)
 data/raw/
 data/external/
+
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# ML models (binary artifacts)
+backend/ml_models/*.pkl
+backend/ml_models/*.joblib
+
+# SQLite cache
+backend/hedgeos_cache.db
+
+# Next.js build output
+frontend/.next/
+frontend/node_modules/

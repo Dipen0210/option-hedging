@@ -1,0 +1,31 @@
+{
+  "holdings": [
+    {
+      "ticker": "IWM",
+      "shares": 2295,
+      "purchase_price": 261.49,
+      "purchase_date": "2026-03-01",
+      "asset_class": "equity"
+    },
+    {
+      "ticker": "VOO",
+      "shares": 500,
+      "purchase_price": 480.00,
+      "purchase_date": "2026-01-15",
+      "asset_class": "equity"
+    },
+    {
+      "ticker": "PDBC",
+      "shares": 3000,
+      "purchase_price": 14.50,
+      "purchase_date": "2025-11-01",
+      "asset_class": "commodity"
+    }
+  ],
+  "total_notional": 600000,
+  "hedge_horizon_days": 180,
+  "protection_level": 0.15,
+  "max_hedge_cost_pct": 0.05,
+  "upside_preservation": true,
+  "execution_mode": "analyze"
+}

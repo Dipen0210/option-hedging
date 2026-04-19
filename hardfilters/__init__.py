@@ -1,1 +1,0 @@
-# hardfilters — Universe filtering utilities
