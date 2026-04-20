@@ -51,56 +51,6 @@ Paper and live execution via Alpaca broker integration with TWAP order splitting
 
 ---
 
-## Repository Structure
-
-```
-optionQ/
-├── backend/
-│   ├── api/                    # FastAPI route handlers
-│   │   ├── routes_portfolio.py # POST /portfolio/analyze
-│   │   ├── routes_hedge.py     # Single-instrument pipelines
-│   │   ├── routes_monitor.py   # Admin: training logs, hedge alerts
-│   │   └── routes_execute.py   # Paper / live order execution
-│   ├── config/                 # Settings, instrument universe
-│   ├── core/
-│   │   ├── explainer/          # LLM explainer (Claude / Ollama / HuggingFace)
-│   │   ├── greeks/             # Greeks calculators per asset class
-│   │   ├── pricing/            # BSM, Black-76, Binomial, MC, GK pricers
-│   │   ├── risk/               # VaR, hedge monitor, factor decomposer
-│   │   ├── simulation/         # Monte Carlo, payoff, scenario engine
-│   │   └── sizing/             # Position sizers per asset class
-│   ├── data/                   # Market data, options chain, rates, VIX
-│   ├── engines/                # 12-layer pipeline (layer_01 → layer_12)
-│   ├── execution/              # Alpaca broker, paper broker, TWAP executor
-│   ├── instruments/            # Options, futures, forwards, swaps, inverse ETFs
-│   ├── ml/
-│   │   ├── regime/             # HDBSCAN main + fast regime detectors
-│   │   ├── volatility/         # GARCH, IV surface, vol regime features
-│   │   └── nlp/                # FinBERT, news ingester, earnings parser
-│   ├── models/                 # Pydantic request/response models
-│   ├── tests/                  # Pipeline, pricing, risk, instrument tests
-│   └── main.py                 # FastAPI app entry point
-│
-├── frontend/
-│   ├── app/
-│   │   ├── page.tsx            # Main portfolio hedge UI
-│   │   └── layout.tsx
-│   ├── lib/api.ts              # Typed API client
-│   └── types/hedgeos.ts        # Shared TypeScript types
-│
-├── .gitignore
-└── README.md
-```
-
----
-
-## Getting Started
-
-### Prerequisites
-- Python 3.13
-- Node.js 18+
-- API keys: Anthropic (or llama-3 running locally), Alpaca (optional), FRED (optional)
-
 ### Visual Representation
 <img width="1470" height="835" alt="Screenshot 2026-04-19 at 12 05 11 PM" src="https://github.com/user-attachments/assets/3aca950d-3fe7-4220-9b73-293f7367f131" />
 
