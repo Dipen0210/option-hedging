@@ -1,4 +1,4 @@
-# OptionQ — Adaptive Options Hedge Engine
+# OptionQ: Multi-Asset Derivative Hedge Engine
 
 A full-stack quantitative platform that **detects market regimes**, **recommends optimal hedge instruments**, and **explains every decision in plain English**. Built around a 12-layer pipeline that goes from raw portfolio input to sized, priced, and scored hedge candidates — with a live Next.js UI and a FastAPI backend.
 
@@ -6,7 +6,7 @@ A full-stack quantitative platform that **detects market regimes**, **recommends
 
 ## What It Does
 
-You describe your portfolio (stocks or existing options positions). OptionQ runs it through a multi-stage pipeline and returns ranked hedge candidates — each with a recommended instrument, strike, expiry, contract count, cost, Greeks, and an AI-generated explanation of why that hedge fits your position.
+You describe your portfolio (stocks or existing options positions). OptionQ runs it through a multi-stage pipeline and returns ranked hedge candidates where each with a recommended instrument, strike, expiry, contract count, cost, Greeks, and an AI-generated explanation of why that hedge fits your position.
 
 ---
 
