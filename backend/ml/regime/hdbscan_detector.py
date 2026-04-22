@@ -14,9 +14,10 @@ Subclasses (MainRegimeDetector, FastRegimeDetector) configure:
   - training_years: rolling data window
   - max_age_hours : how stale the model can be before retraining
 
-7 features:
-    vix_level, vix_5d_change, realized_vol_20d, spy_return_5d,
-    vix_term_slope, tlt_return_5d, hyg_return_5d
+10 features:
+    vix_level, vix_1d_change, vix_5d_change, realized_vol_20d, spy_return_5d,
+    vix_term_slope, tlt_return_5d, hyg_return_5d,
+    iv_rv_ratio, spy_tlt_corr_20d
 """
 
 import os
@@ -142,14 +143,31 @@ class HDBSCANRegimeDetector:
 
     def _build_features(self, df: pd.DataFrame) -> pd.DataFrame:
         feat = pd.DataFrame(index=df.index)
+
+        # Original 7 features
         feat["vix_level"]        = df["vix_level"]
         feat["vix_5d_change"]    = df["vix_level"].diff(5)
         spy_ret = np.log(df["spy_close"] / df["spy_close"].shift(1))
+        tlt_ret = np.log(df["tlt_close"] / df["tlt_close"].shift(1))
         feat["realized_vol_20d"] = spy_ret.rolling(20).std() * np.sqrt(252)
         feat["spy_return_5d"]    = df["spy_close"].pct_change(5)
         feat["vix_term_slope"]   = df["vix3m"] - df["vix_level"]
         feat["tlt_return_5d"]    = df["tlt_close"].pct_change(5)
         feat["hyg_return_5d"]    = df["hyg_close"].pct_change(5)
+
+        # New feature 1: 1-day VIX change — catches single-day shock spikes
+        # that 5-day change smooths over (flash crashes, sudden credit events)
+        feat["vix_1d_change"]    = df["vix_level"].diff(1)
+
+        # New feature 2: implied vol / realized vol ratio — detects complacency
+        # (IV < RV means market is underpricing risk) and panic (IV >> RV)
+        rv = feat["realized_vol_20d"].replace(0, np.nan)
+        feat["iv_rv_ratio"]      = (df["vix_level"] / 100) / rv
+
+        # New feature 3: SPY/TLT 20-day rolling correlation — during crisis
+        # this goes sharply negative (flight-to-safety) before VIX fully spikes
+        feat["spy_tlt_corr_20d"] = spy_ret.rolling(20).corr(tlt_ret)
+
         return feat.dropna()
 
     # ── VIX → regime label ────────────────────────────────────────────────────
