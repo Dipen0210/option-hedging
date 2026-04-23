@@ -77,6 +77,10 @@ export interface InstrumentCandidate {
   when_works_best: string;
   when_fails: string;
 
+  // Gap 8 — actual market mid price from options chain
+  market_premium: number;       // (bid+ask)/2 per contract
+  market_total_cost: number;    // market_premium × 100 × n_contracts
+
   extended_metrics: Record<string, unknown>;
 }
 
@@ -98,4 +102,9 @@ export interface HedgeOutput {
   regime_commentary: string;
   top_recommendation: string;
   llm_provider: string;
+
+  // Gap 2 — portfolio-level hedge Greeks (sum of top candidate per holding)
+  hedge_portfolio_delta: number;
+  hedge_portfolio_gamma: number;
+  hedge_portfolio_vega: number;
 }

@@ -68,6 +68,10 @@ class InstrumentCandidate(BaseModel):
     earnings_warning: bool = False      # True if expiry crosses a known earnings date
     earnings_date: Optional[str] = None # ISO date of the earnings event in the window
 
+    # Market premium (Gap 8 — actual market mid price, not BSM)
+    market_premium: float = 0.0         # (bid+ask)/2 per contract from live chain
+    market_total_cost: float = 0.0      # market_premium × 100 × n_contracts
+
     # Asset-class-specific metrics (populated by L6/L7/L8 engines)
     # IR:       dv01, duration, mod_duration, convexity, yield_level
     # FX:       rho_domestic, rho_foreign, r_domestic, r_foreign
@@ -96,3 +100,8 @@ class HedgeOutput(BaseModel):
     regime_commentary: str = ""
     top_recommendation: str = ""
     llm_provider: str = ""          # which LLM generated the explanations
+
+    # Portfolio-level hedge Greeks (Gap 2 — sum of top candidate per holding)
+    hedge_portfolio_delta: float = 0.0
+    hedge_portfolio_gamma: float = 0.0
+    hedge_portfolio_vega: float = 0.0

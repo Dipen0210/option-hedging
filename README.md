@@ -6,32 +6,37 @@ A full-stack quantitative platform that **detects market regimes**, **recommends
 
 ## What It Does
 
-You describe your portfolio (stocks or existing options positions). OptionQ runs it through a multi-stage pipeline and returns ranked hedge candidates where each with a recommended instrument, strike, expiry, contract count, cost, Greeks, and an AI-generated explanation of why that hedge fits your position.
+You describe your portfolio (stocks or existing options positions). OptionQ runs it through a multi-stage pipeline and returns ranked hedge candidates — each with a recommended instrument, strike, expiry, contract count, actual market premium, Greeks, and an AI-generated explanation of why that hedge fits your position.
 
 ---
 
 ## Key Capabilities
 
 **Regime-Aware Hedging**
-Two ML models (10-year main + 6-month fast) continuously classify the market into volatility regimes using HDBSCAN clustering. Hedge recommendations adapt to whether the market is in a calm, stressed, or crisis regime.
+Two GMM models (10-year main + 6-month fast) classify the market into volatility regimes using Gaussian Mixture Models on 10 macro features (VIX level, VIX term slope, IV/RV ratio, SPY/TLT correlation, realized vol, and more). Hedge recommendations adapt to whether the market is in a low-vol, mid-vol, high-vol, or anomaly regime.
 
 **12-Layer Analysis Pipeline**
-Each portfolio request flows through: input parsing → market context → risk analysis → stress testing → instrument selection → LLM explanation → pricing → position sizing → Greeks calculation → Monte Carlo simulation → scoring/ranking → output formatting.
+Each portfolio request flows through: input parsing → market context → risk analysis → instrument selection → LLM explanation → pricing → position sizing → Greeks calculation → Monte Carlo simulation → scoring/ranking → output formatting.
 
-**Multi-Instrument Support**
-Selects from equity options, futures, inverse ETFs, forwards, swaps, and cross-hedges (e.g., hedging a tech stock with QQQ puts). Scores each candidate on cost efficiency, liquidity, coverage, and regime fit.
+**Accurate IV-Surface Pricing**
+Every option leg is priced using the actual implied volatility at its specific strike — not a flat ATM vol. The system interpolates from the live options chain (volatility skew), so OTM puts are priced correctly instead of being systematically underpriced.
 
-**Accurate Option Sizing**
-Two-stage sizing: delta-target sizing first, then a budget gate (`max_hedge_cost_pct`) that caps contract count to what the portfolio can afford. Coverage % is shown on every candidate card.
+**Market Premium Display**
+Each recommendation shows the actual market mid price `(bid+ask)/2` from the live chain alongside the BSM model price, so you see exactly what you'd pay at the broker vs what the model estimated.
+
+**Portfolio-Level Greeks**
+Aggregates delta, gamma, and vega across all recommended hedges (top candidate per holding) so you can see the net exposure your hedge portfolio provides at a glance.
+
+**Multi-Strategy Options Selection**
+- **Protective Put** — long put on underlying, full downside protection
+- **Bear Put Spread** — long ATM put + short 10% OTM put, cheaper with capped protection
+- **Collar** — long put + short call, near-zero cost with capped upside
+
+**Liquidity + Earnings Filtering**
+Candidates are filtered and scored by open interest, bid-ask spread, and whether the expiry crosses an earnings date (IV crush risk).
 
 **LLM Explainer Layer**
-Pluggable explainer supports Claude (Anthropic), Ollama (local Llama), or HuggingFace models. Generates a plain-English rationale for each hedge recommendation.
-
-**Hedge Monitor**
-Active hedge monitoring checks for roll triggers (DTE < threshold), delta drift, spot moves, and earnings IV-crush risk. Alerts surface via the `/admin/hedge/check-triggers` endpoint.
-
-**Live Execution**
-Paper and live execution via Alpaca broker integration with TWAP order splitting.
+Pluggable explainer supports Claude (Anthropic), Ollama (local Llama), or HuggingFace models. Generates plain-English rationale, pros, cons, and scenario analysis for each hedge candidate.
 
 ---
 
@@ -39,67 +44,87 @@ Paper and live execution via Alpaca broker integration with TWAP order splitting
 
 | Layer | Technology |
 |---|---|
-| **Frontend** | Next.js 16 (Turbopack), React 19, TypeScript, Tailwind CSS |
+| **Frontend** | Next.js (Turbopack), React, TypeScript, Tailwind CSS |
 | **Backend** | FastAPI, Python 3.13, Uvicorn, APScheduler |
-| **ML / Regime** | HDBSCAN, scikit-learn, statsmodels, GARCH |
-| **Options Pricing** | Black-Scholes-Merton, Black-76, Binomial, Garman-Kohlhagen, Monte Carlo |
-| **Data** | yfinance, FRED API, NewsAPI |
+| **ML / Regime** | Gaussian Mixture Models (GMM), scikit-learn, GARCH |
+| **Options Pricing** | Black-Scholes-Merton, Black-76, Binomial (CRR), Monte Carlo |
+| **Data** | yfinance (options chain, prices, IV surface) |
 | **LLM** | Claude (Anthropic API), Ollama, HuggingFace |
-| **Execution** | Alpaca Markets API (paper + live) |
 | **Caching** | SQLite-backed response cache |
-| **NLP** | FinBERT sentiment scoring, earnings transcript parsing |
 
 ---
 
-### Visual Representation
-<img width="1470" height="835" alt="Screenshot 2026-04-19 at 12 05 11 PM" src="https://github.com/user-attachments/assets/3aca950d-3fe7-4220-9b73-293f7367f131" />
+## ML Regime Detection
 
-<img width="356" height="688" alt="Screenshot 2026-04-19 at 12 04 45 PM" src="https://github.com/user-attachments/assets/795ebb84-4f05-4962-9b58-e7d81e86487b" />
+Two GMM models run in parallel and are fused at inference time:
 
-<img width="584" height="662" alt="Screenshot 2026-04-19 at 12 05 59 PM" src="https://github.com/user-attachments/assets/93d43510-e4cb-454a-a2f1-661528723cbf" />
+| Model | Window | Retrain | Components | VIX Weight |
+|---|---|---|---|---|
+| **Main** | 10 years | Monthly | 4 | 65% |
+| **Fast** | 6 months | Daily | 3 | 50% |
 
-<img width="860" height="589" alt="Screenshot 2026-04-19 at 12 06 22 PM" src="https://github.com/user-attachments/assets/3bae9eb5-e48c-4440-b44c-ff27762aeff2" />
+Fusion: `combined = 0.65 × main + 0.35 × fast` (weighted by confidence)
 
-<img width="1141" height="666" alt="Screenshot 2026-04-19 at 12 06 55 PM" src="https://github.com/user-attachments/assets/28e5ffcc-4a60-468a-85f6-09ad277c884c" />
+**10 features**: `vix_level`, `vix_1d_change`, `vix_5d_change`, `realized_vol_20d`, `spy_return_5d`, `vix_term_slope`, `tlt_return_5d`, `hyg_return_5d`, `iv_rv_ratio`, `spy_tlt_corr_20d`
 
+**Anomaly detection**: combined anomaly score ≥ 0.60, or either model individually ≥ 0.85 (hard override)
 
+---
 
 ## API Overview
 
 | Method | Route | Description |
 |---|---|---|
 | `POST` | `/portfolio/analyze` | Full 12-layer hedge pipeline |
-| `POST` | `/instruments/options` | Single-instrument options analysis |
-| `POST` | `/instruments/futures` | Futures hedge analysis |
-| `POST` | `/admin/hedge/check-triggers` | Check roll/delta-drift/spot-move alerts |
-| `GET` | `/admin/earnings/{ticker}` | Next earnings date for a ticker |
+| `POST` | `/instruments/options` | Options-only analysis |
 | `GET` | `/admin/training/status` | ML model ages + next retrain schedule |
-| `POST` | `/admin/retrain/main` | Force-retrain the 10-year regime model |
-| `POST` | `/admin/retrain/fast` | Force-retrain the 6-month regime model |
+| `POST` | `/admin/retrain/main` | Force-retrain the 10-year GMM model |
+| `POST` | `/admin/retrain/fast` | Force-retrain the 6-month GMM model |
 | `GET` | `/health` | Liveness probe |
 
 ---
 
-## Supported Asset Classes
+## Supported Strategies (Phase 1)
 
-| Asset Class | Status |
-|---|---|
-| **Equities** | Full pipeline — options, futures, inverse ETFs, cross-hedges |
-| **FX** | Options pricing via Garman-Kohlhagen, forwards |
-| **Commodities** | Futures + options (Black-76), sizing available |
-| **Interest Rates** | IR derivatives, swap selectors |
-| **Credit** | Credit derivative selectors (stub) |
+| Strategy | Cost | Downside Protection | Upside |
+|---|---|---|---|
+| Protective Put | High | Unlimited | Fully preserved |
+| Bear Put Spread | Medium | Capped (ATM → −10%) | Preserved |
+| Collar | Near-zero | Moderate | Capped |
+
+Cross-hedges (positively correlated ETFs) and macro hedges (GLD, TLT) are generated alongside direct hedges, ranked by basis risk R² and regime fit.
 
 ---
 
-## ML Regime Detection
+## Running Locally
 
-Two models run in parallel and are blended at inference time:
+**Backend**
+```bash
+cd backend
+source .venv/bin/activate
+uvicorn main:app --reload --port 8000
+```
 
-- **Main model** (10-year window): trained monthly, captures long-cycle regimes
-- **Fast model** (6-month window): retrained daily, captures short-cycle shifts
+**Frontend**
+```bash
+cd frontend
+npm run dev
+```
 
-Both use HDBSCAN clustering on VIX-derived features. The regime label (calm / stressed / crisis) is used to filter and score hedge candidates — puts score higher in crisis regimes, collars score higher in calm regimes.
+Frontend runs at `http://localhost:3000`, backend at `http://localhost:8000`.
+
+---
+
+## Visual Representation
+<img width="1470" height="835" alt="Screenshot 2026-04-19 at 12 05 11 PM" src="https://github.com/user-attachments/assets/3aca950d-3fe7-4220-9b73-293f7367f131" />
+
+<img width="356" height="688" alt="Screenshot 2026-04-19 at 12 04 45 PM" src="https://github.com/user-attachments/assets/795ebb84-4f05-4962-9b58-e7d81e86487b" />
+
+<img width="584" height="662" alt="Screenshot 2026-04-19 at 12 05 59 PM" src="https://github.com/user-attachments/assets/93d43510-e4cb-454a-a2f1-661528723cbf" />
+
+<img width="860" height="589" alt="Screenshot 2026-04-19 at 12 06 22 PM" src="https://github.com/user-attachments/assets/3bae9eb5-e48c-4440-b44c-ff27762aeff2" />
+
+<img width="1141" height="666" alt="Screenshot 2026-04-19 at 12 06 55 PM" src="https://github.com/user-attachments/assets/28e5ffcc-4a60-468a-85f6-09ad277c884c" />
 
 ---
 

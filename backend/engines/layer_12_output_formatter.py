@@ -75,10 +75,22 @@ class OutputFormatterEngine:
         for rank, rec in enumerate(hedge_output.recommendations, start=1):
             rec.rank = rank
 
-        # ── 4. Stamp total run time ────────────────────────────────────────────
+        # ── 4. Aggregate portfolio-level hedge Greeks (top candidate per holding)
+        port_delta = port_gamma = port_vega = 0.0
+        for rec in hedge_output.recommendations:
+            if rec.candidates:
+                top = rec.candidates[0]  # already sorted by score desc
+                port_delta += top.delta
+                port_gamma += top.gamma
+                port_vega  += top.vega
+        hedge_output.hedge_portfolio_delta = round(port_delta, 4)
+        hedge_output.hedge_portfolio_gamma = round(port_gamma, 6)
+        hedge_output.hedge_portfolio_vega  = round(port_vega,  4)
+
+        # ── 5. Stamp total run time ────────────────────────────────────────────
         hedge_output.run_time_seconds = round(time.perf_counter() - pipeline_start_time, 3)
 
-        # ── 5. Log summary ─────────────────────────────────────────────────────
+        # ── 6. Log summary ─────────────────────────────────────────────────────
         total_candidates = sum(len(r.candidates) for r in hedge_output.recommendations)
         top_scores = [
             r.candidates[0].score for r in hedge_output.recommendations if r.candidates

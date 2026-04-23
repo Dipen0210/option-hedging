@@ -824,10 +824,16 @@ class OptionsSelector(InstrumentSelector):
     @staticmethod
     def _enrich_candidate(candidate: "InstrumentCandidate") -> "InstrumentCandidate":
         """
-        Attach liquidity metrics and earnings-warning flag to a candidate in-place.
+        Attach liquidity metrics, market premium, and earnings-warning flag
+        to a candidate in-place.
 
         Gap 3: Liquidity — adds open_interest, daily_volume, bid_ask_spread_pct,
                liquidity_ok.  Low-liquidity candidates are kept but flagged in cons.
+
+        Gap 8: Market premium — sets market_premium = (bid+ask)/2 and
+               market_total_cost = market_premium × 100 × n_contracts.
+               For multi-leg (spread/collar), both legs are fetched and the
+               net mid is used.  Falls back to 0.0 if chain is unavailable.
 
         Gap 9: Earnings — if the candidate's expiry window contains a known
                earnings date, sets earnings_warning=True and appends an IV-crush
@@ -838,7 +844,7 @@ class OptionsSelector(InstrumentSelector):
         from backend.data.options_chain import check_option_liquidity
         from backend.data.earnings_calendar import crosses_earnings
 
-        # ── Liquidity ─────────────────────────────────────────────────────────
+        # ── Liquidity + market premium (long leg) ────────────────────────────
         if candidate.expiry_date and candidate.strike and candidate.option_type:
             liq = check_option_liquidity(
                 ticker=candidate.ticker,
@@ -846,17 +852,41 @@ class OptionsSelector(InstrumentSelector):
                 strike=candidate.strike,
                 option_type=candidate.option_type,
             )
-            candidate.liquidity_ok      = liq["passes"]
-            candidate.open_interest     = liq["open_interest"]
-            candidate.daily_volume      = liq["volume"]
+            candidate.liquidity_ok       = liq["passes"]
+            candidate.open_interest      = liq["open_interest"]
+            candidate.daily_volume       = liq["volume"]
             candidate.bid_ask_spread_pct = liq["spread_pct"]
 
             if not liq["passes"] and liq["reason"]:
                 candidate.cons = list(candidate.cons) + [
                     f"Low liquidity: {liq['reason']} — verify before trading"
                 ]
-                # Penalise score for illiquidity (not zero — user can still decide)
                 candidate.score = round(max(candidate.score * 0.80, 0.0), 2)
+
+            # Gap 8: market mid for long leg
+            long_bid, long_ask = liq["bid"], liq["ask"]
+            long_mid = round((long_bid + long_ask) / 2, 4) if (long_bid + long_ask) > 0 else 0.0
+
+            # For multi-leg (spread / collar): fetch short leg and net the mids
+            net_mid = long_mid
+            if candidate.short_strike and candidate.short_option_type:
+                try:
+                    short_liq = check_option_liquidity(
+                        ticker=candidate.ticker,
+                        expiry_str=candidate.expiry_date,
+                        strike=candidate.short_strike,
+                        option_type=candidate.short_option_type,
+                    )
+                    short_bid, short_ask = short_liq["bid"], short_liq["ask"]
+                    short_mid = round((short_bid + short_ask) / 2, 4) if (short_bid + short_ask) > 0 else 0.0
+                    # Long leg cost minus short leg credit
+                    net_mid = max(round(long_mid - short_mid, 4), 0.0)
+                except Exception:
+                    pass
+
+            if net_mid > 0:
+                candidate.market_premium    = net_mid
+                candidate.market_total_cost = round(net_mid * 100 * max(candidate.n_contracts, 1), 2)
 
         # ── Earnings ─────────────────────────────────────────────────────────
         if candidate.expiry_date:
@@ -869,7 +899,6 @@ class OptionsSelector(InstrumentSelector):
                         f"Expiry crosses earnings ({ed}) — IV crush risk: hedge may lose "
                         f"30–50% of value the day after the announcement"
                     ]
-                    # Score penalty — earnings crossing is meaningful risk
                     candidate.score = round(max(candidate.score * 0.85, 0.0), 2)
             except Exception:
                 pass

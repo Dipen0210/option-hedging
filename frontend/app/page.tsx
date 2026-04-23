@@ -238,7 +238,14 @@ function CandidateCard({
 
           {/* Cost + coverage */}
           <div className="text-right shrink-0">
-            <p className="text-sm font-mono font-semibold text-white">{fmt$(c.total_cost)}</p>
+            {c.market_total_cost > 0 ? (
+              <>
+                <p className="text-sm font-mono font-semibold text-white">{fmt$(c.market_total_cost)}</p>
+                <p className="text-[10px] font-mono text-white/25">mkt mid · {fmt$(c.market_premium)}/contract</p>
+              </>
+            ) : (
+              <p className="text-sm font-mono font-semibold text-white">{fmt$(c.total_cost)}</p>
+            )}
             <p className={`text-[11px] font-mono ${costStyle(costPct)}`}>{fmtPct(costPct)} of pos.</p>
             <p className={`text-[11px] font-mono mt-0.5 ${coveragePct >= 1 ? "text-emerald-400" : coveragePct >= 0.5 ? "text-amber-400" : "text-red-400"}`}>
               {Math.round(coveragePct * 100)}% covered
@@ -289,6 +296,46 @@ function CandidateCard({
               </div>
             ))}
           </div>
+
+          {/* Premium breakdown */}
+          {c.market_premium > 0 && (
+            <div className="rounded-lg bg-white/3 border border-white/6 p-3">
+              <p className="text-[10px] font-semibold text-white/30 uppercase tracking-widest mb-2">Premium — market vs model</p>
+              <div className="flex items-center gap-6 flex-wrap">
+                <div>
+                  <p className="text-[10px] text-white/25 mb-0.5">Market mid</p>
+                  <p className="text-base font-mono font-bold text-white">{fmt$(c.market_premium)}<span className="text-xs text-white/30 font-normal"> /contract</span></p>
+                  <p className="text-[10px] text-white/35 mt-0.5">Total {fmt$(c.market_total_cost)} · {c.n_contracts}× lots</p>
+                </div>
+                <div className="w-px h-8 bg-white/8" />
+                <div>
+                  <p className="text-[10px] text-white/25 mb-0.5">BSM model</p>
+                  <p className="text-base font-mono font-bold text-white/50">
+                    {c.n_contracts > 0 ? fmt$(Math.round(c.total_cost / c.n_contracts / 100 * 100) / 100) : "—"}<span className="text-xs text-white/20 font-normal"> /contract</span>
+                  </p>
+                  <p className="text-[10px] text-white/25 mt-0.5">Total {fmt$(c.total_cost)}</p>
+                </div>
+                {c.market_total_cost > 0 && c.total_cost > 0 && (
+                  <>
+                    <div className="w-px h-8 bg-white/8" />
+                    <div>
+                      <p className="text-[10px] text-white/25 mb-0.5">Difference</p>
+                      {(() => {
+                        const diff = c.market_total_cost - c.total_cost;
+                        const cls  = diff > 0 ? "text-red-400" : "text-emerald-400";
+                        return (
+                          <p className={`text-base font-mono font-bold ${cls}`}>
+                            {diff >= 0 ? "+" : ""}{fmt$(Math.round(diff))}
+                          </p>
+                        );
+                      })()}
+                      <p className="text-[10px] text-white/25 mt-0.5">vs BSM estimate</p>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Rationale / Pros / Cons */}
           {(c.rationale || c.pros.length > 0 || c.cons.length > 0) && (
@@ -370,7 +417,7 @@ function HoldingCard({ rec, meta }: { rec: HedgeRecommendation; meta: PositionMe
       </div>
 
       {/* Subheader */}
-      <div className="px-5 py-3 border-b border-white/6 flex items-center gap-3 bg-white/[0.015]">
+      <div className="px-5 py-3 border-b border-white/6 flex items-center gap-3 flex-wrap bg-white/[0.015]">
         <span className="text-xs text-white/30">
           {rec.candidates.length} candidate{rec.candidates.length !== 1 ? "s" : ""}
         </span>
@@ -385,6 +432,25 @@ function HoldingCard({ rec, meta }: { rec: HedgeRecommendation; meta: PositionMe
               <span className="font-mono text-white/50 ml-1">{fmt$(best.total_cost)}</span>
               <span className={`ml-1 ${costStyle(costPct)}`}>({fmtPct(costPct)})</span>
             </span>
+
+            {/* Per-position Greeks from top candidate */}
+            <div className="ml-auto flex items-center gap-2">
+              {(() => {
+                const perDelta = best.n_contracts > 0 ? best.delta / (best.n_contracts * 100) : best.delta;
+                return [
+                  { k: "Δ", v: perDelta,   d: 3 },
+                  { k: "Γ", v: best.gamma, d: 4 },
+                  { k: "ν", v: best.vega,  d: 2 },
+                ].map(({ k, v, d }) => (
+                  <div key={k} className="flex items-center gap-1 px-2 py-0.5 rounded bg-white/4 border border-white/6">
+                    <span className="text-[10px] text-white/25">{k}</span>
+                    <span className={`text-[11px] font-mono font-semibold ${v < 0 ? "text-red-400" : "text-emerald-400"}`}>
+                      {fmtDec(v, d)}
+                    </span>
+                  </div>
+                ));
+              })()}
+            </div>
           </>
         )}
       </div>
@@ -460,6 +526,7 @@ function PortfolioSummary({ result }: { result: HedgeOutput }) {
           <p className="text-sm text-white/70 leading-relaxed">{result.top_recommendation}</p>
         </div>
       )}
+
     </div>
   );
 }
