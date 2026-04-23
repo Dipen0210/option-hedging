@@ -8,18 +8,17 @@ Main regime detector — long-horizon, slow-moving model.
                 (bull + bear + recovery).
 """
 
-from backend.ml.regime.hdbscan_detector import HDBSCANRegimeDetector
+from backend.ml.regime.gmm_detector import GMMRegimeDetector
 
 
-class MainRegimeDetector(HDBSCANRegimeDetector):
-    """10-year rolling HDBSCAN detector, retrained once per month."""
+class MainRegimeDetector(GMMRegimeDetector):
+    """10-year rolling GMM detector, retrained once per month."""
 
     def __init__(self):
         super().__init__(
-            model_prefix       = "main",
-            min_cluster_size   = 15,   # larger clusters needed for 10yr dataset
-            min_samples        = 5,
-            training_years     = 10.0,
-            max_age_hours      = 24 * 30,  # ~1 month
-            vix_signal_weight  = 0.80,  # 10yr data → sparse clusters → trust VIX heavily
+            model_prefix      = "main",
+            n_components      = 4,
+            training_years    = 10.0,
+            max_age_hours     = 24 * 30,  # ~1 month
+            vix_signal_weight = 0.65,     # GMM reliable with 4 components on 10yr data
         )

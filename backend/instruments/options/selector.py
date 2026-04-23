@@ -321,7 +321,11 @@ class OptionsSelector(InstrumentSelector):
 
             expiry_str = expiry.isoformat()
 
-            for moneyness in [1.00, 1.03]:
+            # For puts  OTM = strike < spot (moneyness < 1.0)
+            # For calls OTM = strike > spot (moneyness > 1.0)
+            moneyness_grid = [1.00, 0.97] if option_type == "put" else [1.00, 1.03]
+
+            for moneyness in moneyness_grid:
                 K = round(spot * moneyness / 5) * 5
 
                 greeks = self._price_option(option_type, spot, K, r, q, sigma, T, underlying_ticker, expiry_str=expiry_str)
@@ -356,7 +360,7 @@ class OptionsSelector(InstrumentSelector):
                     lambda_=greeks["lambda_"],
                 )
 
-                otm_pct = round((moneyness - 1) * 100)
+                otm_pct = round((1 - moneyness) * 100) if option_type == "put" else round((moneyness - 1) * 100)
                 strategy = base_label if otm_pct == 0 else f"Direct {option_type.capitalize()} ({otm_pct}% OTM)"
 
                 candidates.append(InstrumentCandidate(
@@ -438,7 +442,7 @@ class OptionsSelector(InstrumentSelector):
         sizing_ratio = h_star if h_star is not None else profile.beta_vs_spy
         _expiry_str  = expiry_str or expiry.isoformat()
 
-        for moneyness in self._strike_moneyness_grid(portfolio.upside_preservation):
+        for moneyness in self._strike_moneyness_grid(portfolio.upside_preservation, option_type):
             K = round(spot * moneyness / 5) * 5
 
             greeks = self._price_option(option_type, spot, K, r, q, sigma, T, hedge_ticker, expiry_str=_expiry_str)
@@ -473,7 +477,7 @@ class OptionsSelector(InstrumentSelector):
                 lambda_=greeks["lambda_"],
             )
 
-            otm_pct  = round((moneyness - 1) * 100)
+            otm_pct  = round((1 - moneyness) * 100) if option_type == "put" else round((moneyness - 1) * 100)
             if option_type == "put":
                 base_name = "Proxy Put" if hedge_category == "cross_hedge" else "Macro Put"
             else:
@@ -782,12 +786,20 @@ class OptionsSelector(InstrumentSelector):
             return None
 
     @staticmethod
-    def _strike_moneyness_grid(upside_preservation) -> List[float]:
-        """1–3 strike moneyness values based on upside preservation preference."""
+    def _strike_moneyness_grid(upside_preservation, option_type: str = "put") -> List[float]:
+        """
+        1–3 strike moneyness values based on upside preservation preference.
+        For puts:  OTM = below spot → moneyness < 1.0 (inverted)
+        For calls: OTM = above spot → moneyness > 1.0
+        """
         pct = float(upside_preservation)
         for threshold, moneyness in reversed(UPSIDE_STRIKE_MAP):
             if pct >= threshold:
-                grid = sorted({1.00, moneyness, min(moneyness + 0.05, 1.15)})
+                if option_type == "put":
+                    otm = 2.0 - moneyness          # e.g. 1.10 → 0.90 (10% OTM put)
+                    grid = sorted({1.00, otm, max(otm - 0.05, 0.80)})
+                else:
+                    grid = sorted({1.00, moneyness, min(moneyness + 0.05, 1.15)})
                 return grid
         return [1.00]
 

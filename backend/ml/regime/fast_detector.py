@@ -9,18 +9,17 @@ Fast regime detector — short-horizon, high-frequency model.
                 recent environment, not the 10-year baseline.
 """
 
-from backend.ml.regime.hdbscan_detector import HDBSCANRegimeDetector
+from backend.ml.regime.gmm_detector import GMMRegimeDetector
 
 
-class FastRegimeDetector(HDBSCANRegimeDetector):
-    """6-month rolling HDBSCAN detector, retrained every 24 hours."""
+class FastRegimeDetector(GMMRegimeDetector):
+    """6-month rolling GMM detector, retrained every 24 hours."""
 
     def __init__(self):
         super().__init__(
-            model_prefix       = "fast",
-            min_cluster_size   = 5,    # fewer samples → smaller min cluster
-            min_samples        = 2,
-            training_years     = 0.5,  # ~125 trading days
-            max_age_hours      = 24,   # daily retrain
-            vix_signal_weight  = 0.50,  # 6mo data → tighter clusters → blend VIX + HDBSCAN equally
+            model_prefix      = "fast",
+            n_components      = 3,
+            training_years    = 0.5,   # ~125 trading days
+            max_age_hours     = 24,    # daily retrain
+            vix_signal_weight = 0.50,  # 6mo data → tighter clusters → blend equally
         )

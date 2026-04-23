@@ -192,8 +192,10 @@ function CandidateCard({
   c: InstrumentCandidate; notional: number; rank: number; defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen ?? false);
-  const costPct    = notional > 0 ? c.total_cost / notional : 0;
-  const coveragePct = notional > 0 && c.max_protection > 0 ? c.max_protection / notional : 0;
+  const costPct      = notional > 0 ? c.total_cost / notional : 0;
+  const coveragePct  = notional > 0 && c.max_protection > 0 ? c.max_protection / notional : 0;
+  // L8 stores portfolio-level delta (per_contract_delta × n_contracts × 100); display per-contract
+  const perContractDelta = c.n_contracts > 0 ? c.delta / (c.n_contracts * 100) : c.delta;
   const sc = scoreColor(c.score);
 
   return (
@@ -246,8 +248,8 @@ function CandidateCard({
           {/* Delta */}
           <div className="text-right shrink-0 w-16">
             <p className="text-[10px] text-white/25 mb-0.5">delta</p>
-            <p className={`text-sm font-mono font-bold ${c.delta < 0 ? "text-red-400" : "text-emerald-400"}`}>
-              {fmtDec(c.delta, 3)}
+            <p className={`text-sm font-mono font-bold ${perContractDelta < 0 ? "text-red-400" : "text-emerald-400"}`}>
+              {fmtDec(perContractDelta, 3)}
             </p>
           </div>
 
@@ -264,7 +266,7 @@ function CandidateCard({
           <div>
             <p className="text-[10px] font-semibold text-white/30 uppercase tracking-widest mb-2">Greeks — hover for explanation</p>
             <div className="flex flex-wrap gap-2">
-              <GreekBadge name="delta" value={c.delta} />
+              <GreekBadge name="delta" value={perContractDelta} />
               <GreekBadge name="gamma" value={c.gamma} />
               <GreekBadge name="theta" value={c.theta} />
               <GreekBadge name="vega"  value={c.vega}  />
