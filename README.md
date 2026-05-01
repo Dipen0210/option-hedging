@@ -119,15 +119,16 @@ Frontend runs at `http://localhost:3000`, backend at `http://localhost:8000`.
 ---
 
 ## Visual Representation
-<img width="1470" height="835" alt="Screenshot 2026-04-19 at 12 05 11 PM" src="https://github.com/user-attachments/assets/3aca950d-3fe7-4220-9b73-293f7367f131" />
 
-<img width="356" height="688" alt="Screenshot 2026-04-19 at 12 04 45 PM" src="https://github.com/user-attachments/assets/795ebb84-4f05-4962-9b58-e7d81e86487b" />
+<img width="1470" height="840" alt="Screenshot 2026-05-01 at 6 37 56 PM" src="https://github.com/user-attachments/assets/e937592c-bcce-40f0-abe6-b0d072495811" />
 
-<img width="584" height="662" alt="Screenshot 2026-04-19 at 12 05 59 PM" src="https://github.com/user-attachments/assets/93d43510-e4cb-454a-a2f1-661528723cbf" />
+--
 
-<img width="860" height="589" alt="Screenshot 2026-04-19 at 12 06 22 PM" src="https://github.com/user-attachments/assets/3bae9eb5-e48c-4440-b44c-ff27762aeff2" />
+<img width="1470" height="839" alt="Screenshot 2026-05-01 at 6 37 21 PM" src="https://github.com/user-attachments/assets/6a896c79-0fb7-4415-8889-5f300e083e90" />
 
-<img width="1141" height="666" alt="Screenshot 2026-04-19 at 12 06 55 PM" src="https://github.com/user-attachments/assets/28e5ffcc-4a60-468a-85f6-09ad277c884c" />
+--
+
+<img width="1470" height="831" alt="Screenshot 2026-05-01 at 6 37 40 PM" src="https://github.com/user-attachments/assets/86496c5a-efeb-4786-bda3-194631053d16" />
 
 ---
 
