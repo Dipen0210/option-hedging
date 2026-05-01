@@ -32,6 +32,9 @@ Aggregates delta, gamma, and vega across all recommended hedges (top candidate p
 - **Bear Put Spread** — long ATM put + short 10% OTM put, cheaper with capped protection
 - **Collar** — long put + short call, near-zero cost with capped upside
 
+**Unhedged Risk Context**
+Each holding card shows a "Without Hedge" panel before the candidates, so the cost of doing nothing is always visible alongside the cost of protection. Displays 1-month 95% VaR, Expected Shortfall, and beta-adjusted stress losses for -10% and -20% SPY shocks. A one-liner compares hedge cost directly against potential VaR loss, making the value of hedging concrete rather than theoretical.
+
 **Liquidity + Earnings Filtering**
 Candidates are filtered and scored by open interest, bid-ask spread, and whether the expiry crosses an earnings date (IV crush risk).
 

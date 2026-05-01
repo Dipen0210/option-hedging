@@ -18,7 +18,7 @@ import logging
 import time
 from typing import Dict, List, Optional
 
-from backend.models.hedge_models import HedgeOutput, HedgeRecommendation, InstrumentCandidate
+from backend.models.hedge_models import HedgeOutput, HedgeRecommendation, InstrumentCandidate, UnhedgedRisk
 from backend.models.risk_models import PortfolioRiskSummary
 
 logger = logging.getLogger(__name__)
@@ -75,7 +75,25 @@ class OutputFormatterEngine:
         for rank, rec in enumerate(hedge_output.recommendations, start=1):
             rec.rank = rank
 
-        # ── 4. Aggregate portfolio-level hedge Greeks (top candidate per holding)
+        # ── 4. Attach unhedged risk context to each recommendation ───────────────
+        if risk_summary:
+            risk_by_ticker = {p.ticker: p for p in risk_summary.risk_profiles}
+            for rec in hedge_output.recommendations:
+                profile = risk_by_ticker.get(rec.asset_ticker)
+                if profile:
+                    notional = profile.notional_value
+                    beta     = profile.beta_vs_spy
+                    rec.unhedged_risk = UnhedgedRisk(
+                        notional          = round(notional, 2),
+                        var_95            = round(profile.var_5pct, 2),
+                        cvar_95           = round(profile.cvar_5pct, 2),
+                        var_pct           = round(profile.var_pct, 4),
+                        beta              = round(beta, 3),
+                        stress_loss_10pct = round(notional * beta * 0.10, 2),
+                        stress_loss_20pct = round(notional * beta * 0.20, 2),
+                    )
+
+        # ── 5. Aggregate portfolio-level hedge Greeks (top candidate per holding)
         port_delta = port_gamma = port_vega = 0.0
         for rec in hedge_output.recommendations:
             if rec.candidates:
@@ -87,10 +105,10 @@ class OutputFormatterEngine:
         hedge_output.hedge_portfolio_gamma = round(port_gamma, 6)
         hedge_output.hedge_portfolio_vega  = round(port_vega,  4)
 
-        # ── 5. Stamp total run time ────────────────────────────────────────────
+        # ── 6. Stamp total run time ────────────────────────────────────────────
         hedge_output.run_time_seconds = round(time.perf_counter() - pipeline_start_time, 3)
 
-        # ── 6. Log summary ─────────────────────────────────────────────────────
+        # ── 7. Log summary ─────────────────────────────────────────────────────
         total_candidates = sum(len(r.candidates) for r in hedge_output.recommendations)
         top_scores = [
             r.candidates[0].score for r in hedge_output.recommendations if r.candidates

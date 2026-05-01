@@ -416,6 +416,43 @@ function HoldingCard({ rec, meta }: { rec: HedgeRecommendation; meta: PositionMe
         </div>
       </div>
 
+      {/* Without-Hedge Risk Panel */}
+      {rec.unhedged_risk && (() => {
+        const ur = rec.unhedged_risk;
+        const topCost = best
+          ? (best.market_total_cost > 0 ? best.market_total_cost : best.total_cost)
+          : 0;
+        const items = [
+          { label: "1mo VaR (95%)",   val: `-${fmt$(ur.var_95)}`,           sub: `${fmtPct(ur.var_pct)} of notional` },
+          { label: "Exp. Shortfall",  val: `-${fmt$(ur.cvar_95)}`,           sub: "tail loss beyond VaR" },
+          { label: "Stress  -10% SPY", val: `-${fmt$(ur.stress_loss_10pct)}`, sub: `β ${ur.beta.toFixed(2)} vs SPY` },
+          { label: "Stress  -20% SPY", val: `-${fmt$(ur.stress_loss_20pct)}`, sub: "severe drawdown scenario" },
+        ];
+        return (
+          <div className="px-5 py-3 border-b border-white/6 bg-red-950/20">
+            <div className="flex items-center gap-2 mb-2.5">
+              <span className="text-[10px] font-bold text-red-400/70 uppercase tracking-widest">Without hedge</span>
+              {best && topCost > 0 && (
+                <span className="ml-auto text-[10px] text-white/30">
+                  Hedge costs <span className="text-emerald-400 font-mono font-semibold">{fmt$(topCost)}</span>
+                  {" "}vs potential loss of{" "}
+                  <span className="text-red-400 font-mono font-semibold">{fmt$(ur.var_95)}</span>
+                </span>
+              )}
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {items.map(({ label, val, sub }) => (
+                <div key={label} className="rounded-lg bg-red-900/15 border border-red-500/10 px-3 py-2">
+                  <p className="text-[10px] text-white/35 mb-0.5">{label}</p>
+                  <p className="text-sm font-mono font-bold text-red-400">{val}</p>
+                  <p className="text-[10px] text-white/25 mt-0.5">{sub}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Subheader */}
       <div className="px-5 py-3 border-b border-white/6 flex items-center gap-3 flex-wrap bg-white/[0.015]">
         <span className="text-xs text-white/30">

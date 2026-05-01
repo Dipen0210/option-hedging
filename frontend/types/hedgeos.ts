@@ -84,10 +84,21 @@ export interface InstrumentCandidate {
   extended_metrics: Record<string, unknown>;
 }
 
+export interface UnhedgedRisk {
+  notional: number;
+  var_95: number;             // 95% VaR in dollars (1-month)
+  cvar_95: number;            // Expected Shortfall in dollars
+  var_pct: number;            // VaR as % of notional
+  beta: number;               // beta vs SPY
+  stress_loss_10pct: number;  // dollar loss in -10% SPY shock
+  stress_loss_20pct: number;  // dollar loss in -20% SPY shock
+}
+
 export interface HedgeRecommendation {
   rank: number;
   asset_ticker: string;
   candidates: InstrumentCandidate[];
+  unhedged_risk?: UnhedgedRisk;
 }
 
 export interface HedgeOutput {

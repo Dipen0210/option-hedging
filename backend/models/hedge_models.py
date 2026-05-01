@@ -80,10 +80,21 @@ class InstrumentCandidate(BaseModel):
     extended_metrics: Dict[str, Any] = {}
 
 
+class UnhedgedRisk(BaseModel):
+    notional: float             # position notional value in dollars
+    var_95: float               # 95% VaR in dollars (1-month)
+    cvar_95: float              # Expected Shortfall in dollars
+    var_pct: float              # VaR as % of notional
+    beta: float                 # beta vs SPY
+    stress_loss_10pct: float    # dollar loss in a -10% SPY shock (beta-adjusted)
+    stress_loss_20pct: float    # dollar loss in a -20% SPY shock (beta-adjusted)
+
+
 class HedgeRecommendation(BaseModel):
     rank: int
     asset_ticker: str                   # holding ticker being hedged
     candidates: List[InstrumentCandidate]
+    unhedged_risk: Optional[UnhedgedRisk] = None
 
 
 class HedgeOutput(BaseModel):
