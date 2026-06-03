@@ -25,5 +25,10 @@ huggingface_hub
 sqlalchemy==2.0.35
 aiosqlite==0.20.0
 
+# Scheduler
+apscheduler==3.10.4
+
 # Utils
 python-dotenv==1.0.1
+pandas-datareader==0.10.0
+feedparser==6.0.11
