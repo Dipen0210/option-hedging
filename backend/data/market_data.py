@@ -35,9 +35,15 @@ def get_current_price(ticker: str) -> float:
         return float(cached)
 
     ticker_obj = yf.Ticker(ticker)
-    hist = ticker_obj.history(period="1d")
+    hist = ticker_obj.history(period="5d")
     if hist.empty:
-        raise ValueError(f"Cannot fetch current price for {ticker}")
+        # fallback: yf.download handles rate-limit retries better
+        df = yf.download(ticker, period="5d", auto_adjust=True, progress=False)
+        if df.empty:
+            raise ValueError(f"Cannot fetch current price for {ticker}")
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [col[0] for col in df.columns]
+        hist = df
     price = float(hist["Close"].iloc[-1])
     cache_set("current_price", ticker, value=price, ttl=300)
     return price
