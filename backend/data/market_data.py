@@ -15,13 +15,52 @@ _SESSION.headers.update({
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/120.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "application/json,text/html,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.5",
+    "Referer": "https://finance.yahoo.com/",
 })
 
 
 def _ticker(symbol: str) -> yf.Ticker:
     return yf.Ticker(symbol, session=_SESSION)
+
+
+def _yahoo_price_direct(ticker: str) -> float:
+    """
+    Direct call to Yahoo Finance chart API — more reliable than the yfinance
+    wrapper on cloud server IPs where the cookie/crumb flow gets blocked.
+    """
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+    resp = _SESSION.get(url, params={"interval": "1d", "range": "5d"}, timeout=10)
+    resp.raise_for_status()
+    data = resp.json()
+    closes = data["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+    closes = [c for c in closes if c is not None]
+    if not closes:
+        raise ValueError(f"No close prices in Yahoo chart API for {ticker}")
+    return float(closes[-1])
+
+
+def _yahoo_history_direct(ticker: str, period: str = "2y") -> pd.DataFrame:
+    """Direct Yahoo Finance chart API for historical OHLCV data."""
+    range_map = {"1y": "1y", "2y": "2y", "6mo": "6mo", "1mo": "1mo", "5d": "5d"}
+    yf_range = range_map.get(period, "2y")
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}"
+    resp = _SESSION.get(url, params={"interval": "1d", "range": yf_range}, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+    result = data["chart"]["result"][0]
+    timestamps = result["timestamp"]
+    quotes = result["indicators"]["quote"][0]
+    df = pd.DataFrame({
+        "Open":   quotes.get("open", []),
+        "High":   quotes.get("high", []),
+        "Low":    quotes.get("low", []),
+        "Close":  quotes.get("close", []),
+        "Volume": quotes.get("volume", []),
+    }, index=pd.to_datetime(timestamps, unit="s", utc=True).tz_convert(None))
+    df.index.name = "Date"
+    return df.dropna(subset=["Close"])
 
 
 def get_price_history(ticker: str, period: str = "2y") -> pd.DataFrame:
@@ -34,11 +73,15 @@ def get_price_history(ticker: str, period: str = "2y") -> pd.DataFrame:
             df_cached = df_cached.set_index("Date")
         return df_cached
 
-    df = yf.download(ticker, period=period, auto_adjust=True, progress=False, session=_SESSION)
+    try:
+        df = _yahoo_history_direct(ticker, period)
+    except Exception:
+        df = yf.download(ticker, period=period, auto_adjust=True, progress=False, session=_SESSION)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [col[0] for col in df.columns]
+
     if df.empty:
         raise ValueError(f"No price data found for {ticker}")
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = [col[0] for col in df.columns]
     cache_set("price_history", ticker, period, value=df.reset_index().to_dict("records"), ttl=TTL)
     return df
 
@@ -49,15 +92,15 @@ def get_current_price(ticker: str) -> float:
     if cached:
         return float(cached)
 
-    hist = _ticker(ticker).history(period="5d")
-    if hist.empty:
-        df = yf.download(ticker, period="5d", auto_adjust=True, progress=False, session=_SESSION)
-        if df.empty:
+    # Try direct API first, fall back to yfinance wrapper
+    try:
+        price = _yahoo_price_direct(ticker)
+    except Exception:
+        hist = _ticker(ticker).history(period="5d")
+        if hist.empty:
             raise ValueError(f"Cannot fetch current price for {ticker}")
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [col[0] for col in df.columns]
-        hist = df
-    price = float(hist["Close"].iloc[-1])
+        price = float(hist["Close"].iloc[-1])
+
     cache_set("current_price", ticker, value=price, ttl=300)
     return price
 
@@ -68,10 +111,13 @@ def get_dividend_yield(ticker: str) -> float:
     if cached is not None:
         return float(cached)
 
-    info = _ticker(ticker).info
-    yield_val = float(info.get("dividendYield") or 0.0)
-    if yield_val > 0.15:
-        yield_val = yield_val / 100.0
+    try:
+        info = _ticker(ticker).info
+        yield_val = float(info.get("dividendYield") or 0.0)
+        if yield_val > 0.15:
+            yield_val = yield_val / 100.0
+    except Exception:
+        yield_val = 0.0
     cache_set("div_yield", ticker, value=yield_val, ttl=TTL)
     return yield_val
 
@@ -83,11 +129,9 @@ def get_risk_free_rate() -> float:
         return float(cached)
 
     try:
-        hist = _ticker("^IRX").history(period="5d")
-        if not hist.empty:
-            rate = float(hist["Close"].iloc[-1]) / 100.0
-            cache_set("risk_free_rate", value=rate, ttl=TTL)
-            return rate
+        rate = _yahoo_price_direct("^IRX") / 100.0
+        cache_set("risk_free_rate", value=rate, ttl=TTL)
+        return rate
     except Exception:
         pass
 
