@@ -122,9 +122,9 @@ class GMMRegimeDetector:
 
     @staticmethod
     def _dl_close(ticker: str, period: str) -> pd.Series:
-        import yfinance as yf
-        raw   = yf.download(ticker, period=period, auto_adjust=True, progress=False)
-        close = raw["Close"]
+        from backend.data.market_data import get_price_history
+        df = get_price_history(ticker, period=period)
+        close = df["Close"]
         if isinstance(close, pd.DataFrame):
             close = close.iloc[:, 0]
         return close.squeeze()

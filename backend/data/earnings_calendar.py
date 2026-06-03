@@ -15,6 +15,7 @@ from datetime import date, timedelta
 from typing import Optional
 
 import yfinance as yf
+from backend.data.market_data import _SESSION
 
 from backend.data.data_cache import cache_get, cache_set
 
@@ -42,7 +43,7 @@ def get_next_earnings_date(ticker: str) -> Optional[str]:
         return cached if cached != "__none__" else None
 
     try:
-        t = yf.Ticker(ticker)
+        t = yf.Ticker(ticker, session=_SESSION)
 
         # yfinance.earnings_dates: DatetimeIndex → DataFrame
         ed = t.earnings_dates

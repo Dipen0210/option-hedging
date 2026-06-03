@@ -1,4 +1,5 @@
 import yfinance as yf
+from backend.data.market_data import _SESSION
 import pandas as pd
 from typing import Dict, Optional
 from backend.data.data_cache import cache_get, cache_set
@@ -29,7 +30,7 @@ def get_yield_curve() -> Dict[str, float]:
     curve = {}
     for tenor, ticker in YIELD_TICKERS.items():
         try:
-            hist = yf.Ticker(ticker).history(period="5d")
+            hist = yf.Ticker(ticker, session=_SESSION).history(period="5d")
             if not hist.empty:
                 curve[tenor] = float(hist["Close"].iloc[-1]) / 100.0
         except Exception:
@@ -61,7 +62,7 @@ def get_sofr_rate() -> float:
         return float(cached)
 
     try:
-        hist = yf.Ticker("^IRX").history(period="5d")
+        hist = yf.Ticker("^IRX", session=_SESSION).history(period="5d")
         if not hist.empty:
             rate = float(hist["Close"].iloc[-1]) / 100.0
             cache_set("sofr_rate", value=rate, ttl=TTL)

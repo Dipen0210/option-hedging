@@ -1,4 +1,5 @@
 import yfinance as yf
+from backend.data.market_data import _SESSION
 import pandas as pd
 import numpy as np
 from typing import Dict, Optional
@@ -32,7 +33,7 @@ def get_options_chain(
             "selected_expiry": cached["selected_expiry"],
         }
 
-    t = yf.Ticker(ticker)
+    t = yf.Ticker(ticker, session=_SESSION)
     today = date.today()
     min_date = today + timedelta(days=expiry_range_days[0])
     max_date = today + timedelta(days=expiry_range_days[1])
@@ -98,7 +99,7 @@ def get_expiry_dates_until(ticker: str, max_date, min_dte: int = 7) -> list:
         return cached
 
     try:
-        t = yf.Ticker(ticker)
+        t = yf.Ticker(ticker, session=_SESSION)
         today = date.today()
         floor = today + timedelta(days=min_dte)
 
@@ -149,7 +150,7 @@ def get_strike_iv(
         return float(cached)
 
     try:
-        t  = yf.Ticker(ticker)
+        t  = yf.Ticker(ticker, session=_SESSION)
         ch = t.option_chain(expiry_str)
         df = (ch.puts if option_type == "put" else ch.calls).copy()
 
@@ -240,7 +241,7 @@ def check_option_liquidity(
     }
 
     try:
-        t  = yf.Ticker(ticker)
+        t  = yf.Ticker(ticker, session=_SESSION)
         ch = t.option_chain(expiry_str)
         df = (ch.puts if option_type == "put" else ch.calls).copy()
 

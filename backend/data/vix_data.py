@@ -1,4 +1,5 @@
 import yfinance as yf
+from backend.data.market_data import _SESSION
 import pandas as pd
 import numpy as np
 from typing import Dict
@@ -34,7 +35,7 @@ def get_vix() -> Dict:
 
     for key, ticker in VIX_TICKERS.items():
         try:
-            hist = yf.Ticker(ticker).history(period="10d")
+            hist = yf.Ticker(ticker, session=_SESSION).history(period="10d")
             if not hist.empty:
                 result[key] = float(hist["Close"].iloc[-1])
                 if key == "spot" and len(hist) >= 5:
@@ -73,7 +74,7 @@ def _get_put_call_ratio() -> float:
     Returns 1.0 as fallback if unavailable.
     """
     try:
-        spy = yf.Ticker("SPY")
+        spy = yf.Ticker("SPY", session=_SESSION)
         expiries = spy.options
         if not expiries:
             return 1.0
