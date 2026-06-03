@@ -113,6 +113,7 @@ export interface HedgeOutput {
   regime_commentary: string;
   top_recommendation: string;
   llm_provider: string;
+  llm_notice: string;
 
   // Gap 2 — portfolio-level hedge Greeks (sum of top candidate per holding)
   hedge_portfolio_delta: number;

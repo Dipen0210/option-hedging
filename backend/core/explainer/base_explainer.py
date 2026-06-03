@@ -96,3 +96,29 @@ class BaseLLMExplainer(ABC):
         Default: True (subclasses should override if they make network calls).
         """
         return True
+
+    def supports_combined_call(self) -> bool:
+        """Return True if this provider implements explain_all() as a single API call."""
+        return False
+
+    def explain_all(
+        self,
+        combined_context: Dict[str, Any],
+    ) -> "CombinedExplanation":
+        """
+        Single-call alternative: explain every candidate across every position
+        AND the portfolio narrative in one prompt.
+
+        Output is keyed by asset_ticker → strategy → CandidateExplanation,
+        plus a PortfolioExplanation, so nothing can be misattributed.
+
+        Only called when supports_combined_call() returns True.
+        """
+        raise NotImplementedError
+
+
+@dataclass
+class CombinedExplanation:
+    """Result of a single explain_all() call covering the whole portfolio."""
+    candidates: Dict[str, Dict[str, CandidateExplanation]] = field(default_factory=dict)
+    portfolio: PortfolioExplanation = field(default_factory=PortfolioExplanation)

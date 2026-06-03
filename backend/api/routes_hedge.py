@@ -30,7 +30,7 @@ async def _run(portfolio: PortfolioInput, instrument_types: List[str]) -> HedgeO
     market_data = await fetch_market_data(portfolio)
     orchestrator = HedgeOrchestrator(
         run_l9_simulation=False,
-        run_l11_llm=False,
+        run_l11_llm=True,
         instrument_types=instrument_types,
     )
     return await asyncio.to_thread(orchestrator.run, portfolio, market_data)

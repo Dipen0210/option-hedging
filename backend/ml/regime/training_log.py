@@ -28,7 +28,11 @@ from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
-_LOG_DIR  = os.path.join(os.path.dirname(__file__), "..", "..", "ml_models", "logs")
+# On Vercel the bundle filesystem is read-only; write logs to /tmp instead.
+if os.environ.get("VERCEL"):
+    _LOG_DIR = "/tmp/ml_models/logs"
+else:
+    _LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "ml_models", "logs")
 _LOG_PATH = os.path.join(_LOG_DIR, "training_log.jsonl")
 
 

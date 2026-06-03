@@ -19,7 +19,7 @@ import time
 from datetime import date
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
@@ -187,6 +187,37 @@ async def check_hedge_triggers(req: HedgeCheckRequest):
     except Exception as exc:
         logger.exception("Hedge trigger check failed")
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.get("/cron/retrain-fast")
+async def cron_retrain_fast(authorization: Optional[str] = Header(default=None)):
+    """
+    Vercel Cron endpoint — daily fast model retrain.
+    Secured by CRON_SECRET env var when set.
+    Schedule: 0 2 * * * (02:00 UTC daily)
+    """
+    _verify_cron_secret(authorization)
+    return await retrain_fast()
+
+
+@router.get("/cron/retrain-main")
+async def cron_retrain_main(authorization: Optional[str] = Header(default=None)):
+    """
+    Vercel Cron endpoint — monthly main model retrain.
+    Secured by CRON_SECRET env var when set.
+    Schedule: 0 2 1 * * (02:00 UTC on the 1st)
+    """
+    _verify_cron_secret(authorization)
+    return await retrain_main()
+
+
+def _verify_cron_secret(authorization: Optional[str]) -> None:
+    secret = os.environ.get("CRON_SECRET")
+    if not secret:
+        return  # no secret configured — open access
+    expected = f"Bearer {secret}"
+    if authorization != expected:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 @router.get("/earnings/{ticker}")

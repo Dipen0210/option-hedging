@@ -1,0 +1,29 @@
+# Web framework
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+pydantic-settings==2.5.2
+
+# Data
+yfinance==0.2.44
+pandas==2.2.3
+numpy==1.26.4
+requests==2.32.3
+
+# Quant / Math
+scipy==1.14.1
+
+# ML
+scikit-learn==1.5.2
+arch==7.1.0
+
+# LLM
+anthropic==0.34.2
+huggingface_hub
+
+# DB / Cache
+sqlalchemy==2.0.35
+aiosqlite==0.20.0
+
+# Utils
+python-dotenv==1.0.1

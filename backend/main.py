@@ -15,6 +15,7 @@ Routes:
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -30,17 +31,20 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # ── Start background scheduler ────────────────────────────────────────
-    from backend.ml.regime.scheduler import build_scheduler
-    scheduler = build_scheduler()
-    scheduler.start()
-    logger.info("APScheduler started — fast(24h) + main(monthly) retrains scheduled.")
+    scheduler = None
+    # APScheduler requires a persistent process — skip on Vercel serverless.
+    # Retraining is handled by Vercel Cron calling /admin/cron/retrain-*.
+    if not os.environ.get("VERCEL"):
+        from backend.ml.regime.scheduler import build_scheduler
+        scheduler = build_scheduler()
+        scheduler.start()
+        logger.info("APScheduler started — fast(24h) + main(monthly) retrains scheduled.")
 
     yield  # server is running
 
-    # ── Shutdown ──────────────────────────────────────────────────────────
-    scheduler.shutdown(wait=False)
-    logger.info("APScheduler stopped.")
+    if scheduler is not None:
+        scheduler.shutdown(wait=False)
+        logger.info("APScheduler stopped.")
 
 
 app = FastAPI(

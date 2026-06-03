@@ -24,6 +24,7 @@ Subclasses (MainRegimeDetector, FastRegimeDetector) configure:
 """
 
 import os
+import shutil
 import time
 import logging
 import numpy as np
@@ -36,8 +37,17 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "ml_models")
-os.makedirs(MODEL_DIR, exist_ok=True)
+_BUNDLE_MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "ml_models")
+
+if os.environ.get("VERCEL"):
+    MODEL_DIR = "/tmp/ml_models"
+    # Copy pre-trained models from the read-only bundle to /tmp on cold start
+    # so the detector can both read and retrain (write) in the same directory.
+    if not os.path.exists(MODEL_DIR):
+        shutil.copytree(_BUNDLE_MODEL_DIR, MODEL_DIR)
+else:
+    MODEL_DIR = _BUNDLE_MODEL_DIR
+    os.makedirs(MODEL_DIR, exist_ok=True)
 
 
 @dataclass

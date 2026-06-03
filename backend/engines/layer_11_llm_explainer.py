@@ -32,6 +32,13 @@ from backend.models.portfolio_models import PortfolioInput
 from backend.models.risk_models import RegimeState, PortfolioRiskSummary
 from backend.core.explainer import get_explainer, PromptBuilder
 from backend.core.explainer.base_explainer import CandidateExplanation
+from backend.core.explainer.huggingface_explainer import HFRateLimitError
+
+_RATE_LIMIT_NOTICE = (
+    "AI explanations are temporarily unavailable — "
+    "the free-tier usage limit has been reached. "
+    "All hedge recommendations and risk data are unaffected."
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,81 +95,96 @@ class FinalLLMExplainerEngine:
         builder = PromptBuilder()
         risk_by_ticker = _build_risk_profile_lookup(risk_summary)
 
-        # ── Per-holding candidate explanations ────────────────────────────────
+        # Collect (ticker, notional, risk_profile, candidates) for every holding
+        position_tuples = []
         for rec in hedge_output.recommendations:
             ticker = rec.asset_ticker
             risk_profile = risk_by_ticker.get(ticker)
             if risk_profile is None:
-                logger.debug("L11: no risk profile for %s — skipping", ticker)
                 continue
-
-            # Look up notional: stock positions first, then options profile notional
             holding_notional = next(
                 (h.shares * h.purchase_price for h in portfolio.stock_positions
                  if h.ticker == ticker),
                 None,
             )
             if holding_notional is None:
-                # Options position — use delta-adjusted notional from risk profile
                 holding_notional = next(
                     (p.notional_value for p in risk_summary.risk_profiles
                      if p.ticker == ticker),
                     hedge_output.portfolio_notional,
                 )
+            position_tuples.append((ticker, holding_notional, risk_profile, rec.candidates))
 
-            try:
-                ctx = builder.build_candidates_context(
-                    asset_ticker=ticker,
-                    holding_notional=holding_notional,
-                    risk_profile=risk_profile,
-                    candidates=rec.candidates,
+        try:
+            if explainer.supports_combined_call():
+                # ── Single API call for entire portfolio ──────────────────────
+                logger.info("L11: combined single-call mode (%d positions)", len(position_tuples))
+                combined_ctx = builder.build_combined_context(
+                    positions=position_tuples,
+                    portfolio=portfolio,
+                    risk_summary=risk_summary,
+                    hedge_output=hedge_output,
                     regime=regime,
                 )
-                explanations: List[CandidateExplanation] = (
-                    explainer.explain_candidates(ctx)
+                result = explainer.explain_all(combined_ctx)
+
+                # Distribute candidate explanations back to each holding
+                for rec in hedge_output.recommendations:
+                    position_exps = result.candidates.get(rec.asset_ticker, {})
+                    for cand in rec.candidates:
+                        exp = position_exps.get(cand.strategy)
+                        if exp:
+                            _merge_explanation(cand, exp)
+
+                # Write portfolio narrative
+                hedge_output.portfolio_summary   = result.portfolio.summary
+                hedge_output.key_risks           = result.portfolio.key_risks
+                hedge_output.regime_commentary   = result.portfolio.regime_commentary
+                hedge_output.top_recommendation  = result.portfolio.top_recommendation
+                hedge_output.llm_provider        = explainer.provider_name
+                logger.info("L11: combined call done (provider=%s)", explainer.provider_name)
+
+            else:
+                # ── Per-holding calls (fallback for Claude etc.) ───────────────
+                for ticker, holding_notional, risk_profile, candidates in position_tuples:
+                    ctx = builder.build_candidates_context(
+                        asset_ticker=ticker,
+                        holding_notional=holding_notional,
+                        risk_profile=risk_profile,
+                        candidates=candidates[:3],
+                        regime=regime,
+                    )
+                    explanations = explainer.explain_candidates(ctx)
+                    exp_map = {(e.ticker, e.strategy): e for e in explanations}
+                    for rec in hedge_output.recommendations:
+                        if rec.asset_ticker != ticker:
+                            continue
+                        for cand in rec.candidates:
+                            exp = exp_map.get((cand.ticker, cand.strategy))
+                            if exp:
+                                _merge_explanation(cand, exp)
+
+                port_ctx = builder.build_portfolio_context(
+                    portfolio=portfolio,
+                    risk_summary=risk_summary,
+                    hedge_output=hedge_output,
+                    regime=regime,
                 )
+                port_exp = explainer.explain_portfolio(port_ctx)
+                hedge_output.portfolio_summary   = port_exp.summary
+                hedge_output.key_risks           = port_exp.key_risks
+                hedge_output.regime_commentary   = port_exp.regime_commentary
+                hedge_output.top_recommendation  = port_exp.top_recommendation
+                hedge_output.llm_provider        = explainer.provider_name
+                logger.info("L11: per-position calls done (provider=%s)", explainer.provider_name)
 
-                # Build lookup: (ticker, strategy) → explanation
-                exp_map = {
-                    (e.ticker, e.strategy): e for e in explanations
-                }
-
-                for cand in rec.candidates:
-                    key = (cand.ticker, cand.strategy)
-                    exp = exp_map.get(key)
-                    if exp:
-                        _merge_explanation(cand, exp)
-                        logger.debug("L11: explained %s / %s", ticker, cand.strategy)
-                    else:
-                        logger.debug(
-                            "L11: no explanation returned for %s / %s", ticker, cand.strategy
-                        )
-
-            except Exception as exc:
-                logger.error(
-                    "L11: candidates explanation failed for %s: %s", ticker, exc, exc_info=True
-                )
-
-        # ── Portfolio-level narrative ──────────────────────────────────────────
-        try:
-            port_ctx = builder.build_portfolio_context(
-                portfolio=portfolio,
-                risk_summary=risk_summary,
-                hedge_output=hedge_output,
-                regime=regime,
-            )
-            port_exp = explainer.explain_portfolio(port_ctx)
-
-            hedge_output.portfolio_summary    = port_exp.summary
-            hedge_output.key_risks            = port_exp.key_risks
-            hedge_output.regime_commentary    = port_exp.regime_commentary
-            hedge_output.top_recommendation   = port_exp.top_recommendation
-            hedge_output.llm_provider         = explainer.provider_name
-
-            logger.info("L11: portfolio narrative written (provider=%s)", explainer.provider_name)
+        except HFRateLimitError:
+            logger.warning("L11: HuggingFace free-tier rate limit hit")
+            hedge_output.llm_notice   = _RATE_LIMIT_NOTICE
+            hedge_output.llm_provider = explainer.provider_name
 
         except Exception as exc:
-            logger.error("L11: portfolio explanation failed: %s", exc, exc_info=True)
+            logger.error("L11: explanation failed: %s", exc, exc_info=True)
 
         elapsed = time.perf_counter() - t0
         logger.info("L11 FinalLLMExplainerEngine done in %.3fs", elapsed)

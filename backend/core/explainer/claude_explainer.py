@@ -154,13 +154,57 @@ class ClaudeExplainer(BaseLLMExplainer):
 
 def _extract_json(text: str) -> str:
     """
-    Strip markdown code fences if Claude wrapped the JSON in ```json ... ```.
-    Falls back to returning the text as-is.
+    Extract the first complete JSON array or object from LLM output.
+    Handles markdown code fences, trailing commas, and extra text that
+    Llama/HF models append after the closing bracket.
     """
+    import re
     text = text.strip()
+
+    # Strip ```json ... ``` fences
     if text.startswith("```"):
         lines = text.split("\n")
-        # Remove first line (```json or ```) and last line (```)
         inner = lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
-        return "\n".join(inner)
-    return text
+        text = "\n".join(inner).strip()
+
+    # Remove trailing commas before ] or } (common Llama quirk)
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+
+    # Extract the first complete balanced [ ... ] or { ... } block,
+    # discarding anything Llama appended after the closing bracket.
+    start = -1
+    opener = closer = None
+    for i, ch in enumerate(text):
+        if ch in ("[", "{"):
+            start = i
+            opener = ch
+            closer = "]" if ch == "[" else "}"
+            break
+    if start == -1:
+        return text  # no JSON found — return as-is, let caller handle
+
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if escape:
+            escape = False
+            continue
+        if ch == "\\" and in_string:
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == opener:
+            depth += 1
+        elif ch == closer:
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+
+    # Truncated — return what we have; trailing comma already cleaned above
+    return text[start:]

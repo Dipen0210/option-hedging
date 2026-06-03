@@ -372,6 +372,42 @@ function CandidateCard({
               )}
             </div>
           )}
+
+          {/* When works best / When fails — only shown when LLM populated them */}
+          {(c.when_works_best || c.when_fails) && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+              {c.when_works_best && (
+                <div className="rounded-lg bg-sky-500/5 border border-sky-500/15 p-3 flex gap-2.5">
+                  <span className="text-sky-400 text-sm shrink-0 mt-px">↗</span>
+                  <div>
+                    <p className="text-[10px] font-semibold text-sky-400/70 uppercase tracking-widest mb-2">Works best when</p>
+                    <ul className="space-y-1">
+                      {c.when_works_best.split(" - ").map((part, i) => (
+                        <li key={i} className="text-xs text-white/55 flex gap-1.5 leading-relaxed">
+                          <span className="text-sky-400/60 shrink-0">•</span>{part}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+              {c.when_fails && (
+                <div className="rounded-lg bg-orange-500/5 border border-orange-500/15 p-3 flex gap-2.5">
+                  <span className="text-orange-400 text-sm shrink-0 mt-px">↘</span>
+                  <div>
+                    <p className="text-[10px] font-semibold text-orange-400/70 uppercase tracking-widest mb-2">Watch out when</p>
+                    <ul className="space-y-1">
+                      {c.when_fails.split(" - ").map((part, i) => (
+                        <li key={i} className="text-xs text-white/55 flex gap-1.5 leading-relaxed">
+                          <span className="text-orange-400/60 shrink-0">•</span>{part}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -534,6 +570,15 @@ function PortfolioSummary({ result }: { result: HedgeOutput }) {
           </div>
         ))}
       </div>
+
+      {/* LLM rate-limit notice */}
+      {result.llm_notice && (
+        <div className="border-t border-white/6 pt-4">
+          <p className="text-xs text-amber-400/80 bg-amber-400/8 border border-amber-400/20 rounded-lg px-3 py-2">
+            ⚠ {result.llm_notice}
+          </p>
+        </div>
+      )}
 
       {/* LLM summary */}
       {result.portfolio_summary && (

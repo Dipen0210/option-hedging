@@ -5,7 +5,9 @@ import hashlib
 import os
 from typing import Optional, Any
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "..", "hedgeos_cache.db")
+_DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "hedgeos_cache.db")
+# On Vercel the bundle filesystem is read-only; use the writable /tmp instead.
+DB_PATH = "/tmp/hedgeos_cache.db" if os.environ.get("VERCEL") else _DEFAULT_DB_PATH
 
 
 def _get_conn() -> sqlite3.Connection:

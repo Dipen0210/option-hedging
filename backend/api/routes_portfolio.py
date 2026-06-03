@@ -54,7 +54,7 @@ async def analyze_portfolio(portfolio: PortfolioInput):
     """Full 12-layer hedge pipeline — all instrument types."""
     try:
         market_data = await fetch_market_data(portfolio)
-        orchestrator = HedgeOrchestrator(run_l9_simulation=True, run_l11_llm=False)
+        orchestrator = HedgeOrchestrator(run_l9_simulation=True, run_l11_llm=True)
         result: HedgeOutput = await asyncio.to_thread(
             orchestrator.run, portfolio, market_data
         )

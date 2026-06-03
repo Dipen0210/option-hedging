@@ -1,0 +1,15 @@
+{
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/api/index" }
+  ],
+  "functions": {
+    "api/index.py": {
+      "runtime": "python3.12",
+      "maxDuration": 60
+    }
+  },
+  "crons": [
+    { "path": "/admin/cron/retrain-fast", "schedule": "0 2 * * *" },
+    { "path": "/admin/cron/retrain-main", "schedule": "0 2 1 * *" }
+  ]
+}

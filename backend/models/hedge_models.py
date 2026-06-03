@@ -111,6 +111,7 @@ class HedgeOutput(BaseModel):
     regime_commentary: str = ""
     top_recommendation: str = ""
     llm_provider: str = ""          # which LLM generated the explanations
+    llm_notice: str = ""            # user-facing notice when LLM is unavailable
 
     # Portfolio-level hedge Greeks (Gap 2 — sum of top candidate per holding)
     hedge_portfolio_delta: float = 0.0
