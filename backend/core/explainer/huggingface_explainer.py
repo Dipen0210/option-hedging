@@ -19,7 +19,10 @@ from backend.core.explainer.base_explainer import (
     BaseLLMExplainer,
     CandidateExplanation,
     CombinedExplanation,
+    LLMProviderRejectedError,
+    LLMRateLimitError,
     PortfolioExplanation,
+    raise_if_provider_refused,
 )
 from backend.core.explainer.prompt_builder import CANDIDATES_SYSTEM, COMBINED_SYSTEM, PORTFOLIO_SYSTEM
 from backend.core.explainer.claude_explainer import _extract_json
@@ -30,8 +33,14 @@ CANDIDATE_MAX_TOKENS = 1500
 PORTFOLIO_MAX_TOKENS = 400
 
 
-class HFRateLimitError(Exception):
-    """Raised when the HuggingFace free-tier rate limit is hit (HTTP 429)."""
+class HFRateLimitError(LLMRateLimitError):
+    """
+    The HuggingFace rate limit was hit (HTTP 429).
+
+    Kept as a provider-specific subclass so existing callers that catch it
+    still work, while the engine can catch the provider-agnostic
+    `LLMRateLimitError` instead.
+    """
 
 
 class HuggingFaceExplainer(BaseLLMExplainer):
@@ -80,9 +89,12 @@ class HuggingFaceExplainer(BaseLLMExplainer):
             raw = response.choices[0].message.content.strip()
             return self._parse_candidates(raw, context)
 
+        except (LLMProviderRejectedError, LLMRateLimitError):
+            raise
         except Exception as e:
-            if _is_rate_limit(e):
-                raise HFRateLimitError() from e
+            # A refusal the caller has to report differently is re-raised; an
+            # ordinary failure degrades to an empty result as before.
+            raise_if_provider_refused(e, self.provider_name)
             logger.error(f"HuggingFace explain_candidates failed: {e}")
             return []
 
@@ -105,9 +117,12 @@ class HuggingFaceExplainer(BaseLLMExplainer):
             raw = response.choices[0].message.content.strip()
             return self._parse_portfolio(raw)
 
+        except (LLMProviderRejectedError, LLMRateLimitError):
+            raise
         except Exception as e:
-            if _is_rate_limit(e):
-                raise HFRateLimitError() from e
+            # A refusal the caller has to report differently is re-raised; an
+            # ordinary failure degrades to an empty result as before.
+            raise_if_provider_refused(e, self.provider_name)
             logger.error(f"HuggingFace explain_portfolio failed: {e}")
             return PortfolioExplanation()
 
@@ -128,9 +143,12 @@ class HuggingFaceExplainer(BaseLLMExplainer):
             raw = response.choices[0].message.content.strip()
             return self._parse_combined(raw, combined_context)
 
+        except (LLMProviderRejectedError, LLMRateLimitError):
+            raise
         except Exception as e:
-            if _is_rate_limit(e):
-                raise HFRateLimitError() from e
+            # A refusal the caller has to report differently is re-raised; an
+            # ordinary failure degrades to an empty result as before.
+            raise_if_provider_refused(e, self.provider_name)
             logger.error(f"HuggingFace explain_all failed: {e}")
             return CombinedExplanation()
 
@@ -230,12 +248,19 @@ class HuggingFaceExplainer(BaseLLMExplainer):
 
 
 def _is_rate_limit(exc: Exception) -> bool:
-    """Return True if the exception signals an HF free-tier rate limit (429)."""
-    msg = str(exc).lower()
-    if any(k in msg for k in ("429", "rate limit", "too many requests", "quota")):
+    """
+    Deprecated — kept only because it was public.
+
+    It matched the bare substrings "429" and "quota" anywhere in an error
+    message, which classified HuggingFace's HTTP 402 "You have no remaining
+    credits" as a transient rate limit whenever those digits turned up in the
+    appended request ID. Use `raise_if_provider_refused`, which reads the HTTP
+    status and only falls back to wording when there is none.
+    """
+    try:
+        raise_if_provider_refused(exc, "huggingface")
+    except LLMRateLimitError:
         return True
-    # huggingface_hub raises HfHubHTTPError with a status_code attribute
-    status = getattr(exc, "response", None)
-    if status is not None and getattr(status, "status_code", None) == 429:
-        return True
+    except LLMProviderRejectedError:
+        return False
     return False

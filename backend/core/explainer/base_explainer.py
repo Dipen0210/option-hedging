@@ -12,7 +12,102 @@ Contract:
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Optional
+
+
+class LLMRateLimitError(Exception):
+    """
+    The provider refused this call but would accept a later one.
+
+    Transient by definition: a retry, or waiting for a window to reset, is the
+    correct response. Raised rather than swallowed so the engine can tell the
+    user the analysis is coming back, instead of reporting a blank result.
+    """
+
+
+class LLMProviderRejectedError(Exception):
+    """
+    The provider refused this call and will refuse the next one too.
+
+    Bad credentials, an exhausted balance or a model the account may not use.
+    Nothing inside OptionQ can clear it and no amount of retrying will: an
+    operator has to change a key or top up an account. It is a distinct type
+    from `LLMRateLimitError` because the two demand opposite responses, and
+    reporting one as the other is what this class exists to prevent — a
+    permanent billing rejection used to surface as "the language model
+    returned no analysis for this run", which reads as a one-off glitch.
+
+    `reason` is a short, categorical phrase safe to show a user. It is derived
+    from the HTTP status, never copied from the provider's response body: those
+    bodies carry request IDs, internal URLs and account identifiers.
+    """
+
+    def __init__(self, provider: str, reason: str):
+        super().__init__(f"{provider} rejected the request: {reason}")
+        self.provider = provider
+        self.reason = reason
+
+
+# Statuses that mean "do not come back without changing something", mapped to
+# the phrase shown to the user.
+_REJECTION_REASONS = {
+    401: "the configured API credentials were refused",
+    402: "the provider account has no remaining credits",
+    403: "the configured credentials are not permitted to use this model",
+}
+
+
+def _http_status(exc: BaseException) -> Optional[int]:
+    """
+    The HTTP status behind an SDK exception, or None if it carries none.
+
+    huggingface_hub hangs a requests/httpx response off `.response`; the
+    anthropic SDK puts the code on the exception itself. Both are checked
+    because neither is guaranteed and a missing one is not an error.
+    """
+    resp = getattr(exc, "response", None)
+    code = getattr(resp, "status_code", None)
+    if isinstance(code, int):
+        return code
+    code = getattr(exc, "status_code", None)
+    return code if isinstance(code, int) else None
+
+
+def raise_if_provider_refused(exc: BaseException, provider: str) -> None:
+    """
+    Translate a provider SDK exception into a typed refusal, or return.
+
+    Returning means "this is an ordinary failure" — the caller logs it and
+    degrades. Raising means the caller must not pretend the run merely came
+    back empty.
+
+    The status code is authoritative and the message is consulted **only** when
+    there is no status. That ordering is the point of this function, not an
+    implementation detail: a real HuggingFace 402 body reads "You have no
+    remaining credits" and arrives alongside a request ID such as
+    `Root=1-6ae50969-...`, so substring-matching an error string for "429" or
+    "quota" can classify a permanent billing failure as a transient rate limit.
+    Once a status is in hand, the text cannot overrule it.
+    """
+    status = _http_status(exc)
+
+    if status is not None:
+        if status in _REJECTION_REASONS:
+            raise LLMProviderRejectedError(provider, _REJECTION_REASONS[status]) from exc
+        if status == 429:
+            raise LLMRateLimitError(f"{provider} rate limit reached") from exc
+        return
+
+    # No status to go on — fall back to the wording. Deliberately no bare "402"
+    # or "429" substring test: those digits appear in request IDs and in the
+    # documentation URLs these SDKs append to their messages.
+    msg = str(exc).lower()
+    if any(k in msg for k in ("no remaining credits", "payment required", "insufficient credit")):
+        raise LLMProviderRejectedError(provider, _REJECTION_REASONS[402]) from exc
+    if any(k in msg for k in ("invalid api key", "authentication", "unauthorized")):
+        raise LLMProviderRejectedError(provider, _REJECTION_REASONS[401]) from exc
+    if any(k in msg for k in ("rate limit", "too many requests", "quota")):
+        raise LLMRateLimitError(f"{provider} rate limit reached") from exc
 
 
 @dataclass
@@ -49,7 +144,14 @@ class BaseLLMExplainer(ABC):
     Implementors should:
       - Accept a structured context dict (built by PromptBuilder)
       - Return CandidateExplanation and PortfolioExplanation objects
-      - Never raise exceptions to the caller — return empty/fallback objects on error
+      - Return empty/fallback objects when a call simply fails, so a provider
+        hiccup cannot take down a hedge run
+      - Raise `LLMProviderRejectedError` or `LLMRateLimitError` when the
+        provider refuses for a reason the caller must report differently.
+        This is the one exception to the rule above, and it is deliberate:
+        "never raise" previously meant a permanently misconfigured provider
+        was indistinguishable from a model that answered with nothing, and the
+        user was told the model "returned no analysis for this run".
     """
 
     @property

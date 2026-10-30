@@ -17,7 +17,10 @@ from typing import Any, Dict, List
 from backend.core.explainer.base_explainer import (
     BaseLLMExplainer,
     CandidateExplanation,
+    LLMProviderRejectedError,
+    LLMRateLimitError,
     PortfolioExplanation,
+    raise_if_provider_refused,
 )
 from backend.core.explainer.prompt_builder import CANDIDATES_SYSTEM, PORTFOLIO_SYSTEM
 
@@ -54,7 +57,10 @@ class ClaudeExplainer(BaseLLMExplainer):
     ) -> List[CandidateExplanation]:
         """
         Send candidates context to Claude, parse structured JSON response.
-        Returns empty list on any error (engine handles fallback).
+
+        Returns an empty list when a call fails and the engine should fall back.
+        Raises `LLMProviderRejectedError` / `LLMRateLimitError` when the
+        provider refused in a way the user has to be told about.
         """
         if not self.is_available():
             logger.warning("Claude API key not configured — skipping explanation")
@@ -71,7 +77,14 @@ class ClaudeExplainer(BaseLLMExplainer):
             raw = response.content[0].text.strip()
             return self._parse_candidates(raw, context)
 
+        except (LLMProviderRejectedError, LLMRateLimitError):
+            raise
         except Exception as e:
+            # Previously every failure returned empty, so a refused API key and
+            # a model that answered with nothing were the same event to the
+            # caller, and the user was told the model "returned no analysis for
+            # this run" either way.
+            raise_if_provider_refused(e, self.provider_name)
             logger.error(f"Claude explain_candidates failed: {e}")
             return []
 
@@ -81,7 +94,9 @@ class ClaudeExplainer(BaseLLMExplainer):
     ) -> PortfolioExplanation:
         """
         Send portfolio context to Claude, parse structured JSON response.
-        Returns empty PortfolioExplanation on any error.
+
+        Returns an empty PortfolioExplanation when a call fails; raises on a
+        provider refusal, as `explain_candidates` does.
         """
         if not self.is_available():
             return PortfolioExplanation()
@@ -97,7 +112,14 @@ class ClaudeExplainer(BaseLLMExplainer):
             raw = response.content[0].text.strip()
             return self._parse_portfolio(raw)
 
+        except (LLMProviderRejectedError, LLMRateLimitError):
+            raise
         except Exception as e:
+            # Previously every failure returned empty, so a refused API key and
+            # a model that answered with nothing were the same event to the
+            # caller, and the user was told the model "returned no analysis for
+            # this run" either way.
+            raise_if_provider_refused(e, self.provider_name)
             logger.error(f"Claude explain_portfolio failed: {e}")
             return PortfolioExplanation()
 

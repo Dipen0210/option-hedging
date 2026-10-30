@@ -33,13 +33,25 @@ from backend.models.portfolio_models import PortfolioInput
 from backend.models.risk_models import RegimeState, PortfolioRiskSummary
 from backend.core.explainer import get_explainer, PromptBuilder
 from backend.core.explainer.base_explainer import CandidateExplanation
-from backend.core.explainer.huggingface_explainer import HFRateLimitError
+from backend.core.explainer.base_explainer import (
+    LLMProviderRejectedError,
+    LLMRateLimitError,
+)
+from backend.core.explainer.huggingface_explainer import HFRateLimitError  # noqa: F401
 
 _RATE_LIMIT_NOTICE = (
     "AI explanations are temporarily unavailable — "
     "the free-tier usage limit has been reached. "
     "The narrative below was generated from the computed figures instead. "
     "All hedge recommendations and risk data are unaffected."
+)
+
+_REJECTED_NOTICE = (
+    "AI explanations are unavailable: the {provider} language-model provider "
+    "refused this request because {reason}. This is not a temporary problem — "
+    "it will keep happening until the provider account or API key is changed. "
+    "The narrative below was generated directly from the computed figures "
+    "instead. All hedge recommendations and risk data are unaffected."
 )
 
 _SUBSTITUTED_NOTICE = (
@@ -438,8 +450,25 @@ class FinalLLMExplainerEngine:
                 hedge_output.llm_provider        = explainer.provider_name
                 logger.info("L11: per-position calls done (provider=%s)", explainer.provider_name)
 
-        except HFRateLimitError:
-            logger.warning("L11: HuggingFace free-tier rate limit hit")
+        except LLMProviderRejectedError as exc:
+            # Ordered before the rate-limit handler and before the catch-all:
+            # a permanent refusal must not be described as either a transient
+            # limit or an empty run. `exc.reason` is a categorical phrase built
+            # from the HTTP status in base_explainer, not provider response
+            # text, so no request ID, URL or account identifier reaches the
+            # response body.
+            logger.error(
+                "L11: provider '%s' refused the request permanently (%s) — "
+                "an operator must act; falling back to computed figures",
+                exc.provider, exc.reason,
+            )
+            hedge_output.llm_notice   = _REJECTED_NOTICE.format(
+                provider=exc.provider, reason=exc.reason,
+            )
+            hedge_output.llm_provider = explainer.provider_name
+
+        except LLMRateLimitError:
+            logger.warning("L11: provider rate limit hit")
             hedge_output.llm_notice   = _RATE_LIMIT_NOTICE
             hedge_output.llm_provider = explainer.provider_name
 
