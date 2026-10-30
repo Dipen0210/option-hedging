@@ -1,0 +1,1171 @@
+# OptionQ — Final Independent Re-Audit (Phase 8)
+
+**Date:** 2026-10-29 · **Branch:** `main` (uncommitted working tree)
+**Scope:** re-audit of the v1 repair against the original readiness audit
+(verdict 2.5 / 10, all four readiness questions "No")
+**Method:** static inspection, 674 automated tests, and live end-to-end runs
+against a real `uvicorn` server — 05:50 ET (pre-market), 09:58 EDT (market
+open), and a third with an LLM provider wired in (§B ⑤)
+
+> Verification tags used throughout: **[tested]** a regression test pins it ·
+> **[verified]** observed in a live end-to-end run · **[code]** read in source
+> but not exercised · **Not verified** — stated as such, never inferred.
+
+---
+
+## A. Executive verdict
+
+**OptionQ now completes the portfolio hedging workflow end to end, on real
+market data, with every recommendation traceable to a listed contract, every
+substituted input disclosed, and its primary pricing paths observed against a
+live two-sided market. It is ready for external user testing.**
+
+**Two distinct bars, and only the first is claimed.** *Ready for external user
+testing* means the workflow completes on live data, the numbers are defensible
+and provenanced, the failure paths are honest, and the deployment
+configuration fails closed — all of which is now measured, including on a
+reproduced production runtime (§F). *Ready for unsupervised public use* is a
+higher bar and is **not** claimed: it would require the image actually built
+and run, a monitored deployment, and market-hours observation over more than a
+single session. Nothing in this report should be read as the second claim.
+
+### What changed this cycle
+
+**R7 is closed, and it was not a defect.** The last open P1 — an implausibly
+weak single-stock correlation structure — was root-caused rather than argued
+away. The product's return series is **byte-identical** to an independent
+recompute from raw provider JSON (`maxdiff = 0.00e+00`), and the weak R² is
+purely an artefact of the 252-session window the product actually fits on:
+over 500 sessions the same AAPL/SPY pair gives R²=0.354, ρ=+0.595, β=1.03,
+while index-replication pairs barely move. Single-stock dispersion against the
+index was genuinely extreme over the trailing year. The product measures it
+correctly **and refuses the hedge** — SPY is rejected as an AAPL cross hedge
+at R²=0.084 against a 0.30 floor. Full detail in §C.
+
+**Two new defects were found in its place, and they are the more important
+finding.** Reproducing the production runtime exposed a **P0 that could only
+ever have fired in production**: the cache opened SQLite inside the
+root-owned application tree and let every error propagate, so on a read-only
+container filesystem every analysis request died *after* its market-data
+fetch had succeeded. Separately, the primary history path was serving
+**dividend-unadjusted** prices while the fallback served adjusted ones — the
+same ticker returned a different history depending on which path answered,
+flipping the sign of HYG's annual return and moving three of the five macro
+factors by ~4.5pp. Both are fixed, both are pinned by tests that reproduce the
+real condition rather than mocking it, and both are written up as a new defect
+class (§B⑥) because what they have in common is that **no test on this machine
+could have seen either one**.
+
+**From the previous cycle: R2, R4 and R8 closed, and one further defect found
+while closing R4 that was worse than R4.** L11 runs by default. Its
+`_merge_explanation` replaced `candidate.cons` wholesale — and `cons` is where
+the product's own disclosures live, including *"premium shown is theoretical,
+not an executable price"*. So with any LLM configured, a model that returned
+its own bullets **deleted the product's disclosures from the API response**,
+and the user saw a hedge priced off a model with nothing left on screen to
+say so. This was never visible in the earlier verification runs because no
+API key was configured, which routed every run down the deterministic
+fallback and never through the merge. Proven both ways against the live HTTP
+API in §B ⑤.
+**R1 is closed.** Run at 09:53–09:58 EDT on 2026-10-29 with the market open:
+all 21 live-provider tests passed (previously 21 skipped), premiums resolved
+to `market_mid` and volatility to `contract_iv`, and the liquidity screen
+rejected **68 of 165** live SPY put strikes — 67 on open interest and one on a
+spread wider than the 5% limit. The 95%-moneyness put quoted 10.30 / 10.37, a
+0.68% spread, and 163 of 165 strikes were two-sided. These are measurements,
+not inferences.
+
+Closing R1 required fixing the gate that had been hiding it. `_is_us_market_hours()`
+subtracted a flat five hours from UTC and called the result ET — that is EST,
+so for the ~8 months of EDT the window it actually enforced was 10:30–17:00.
+It therefore skipped the two-sided-quote assertion for the first hour of every
+summer session, and, worse, kept asserting for an hour *after* the close, where
+a missing quote is not a defect. It now uses `ZoneInfo("America/New_York")`.
+
+### Readiness questions, re-answered
+
+| Question | v0 | v1 | Basis |
+|---|---|---|---|
+| Does the application complete its advertised workflow? | **No** | **Yes** | 674 tests, 21/21 live, 28/28 browser-driven UI checks, and a full `/portfolio/analyze` run on a reproduced production runtime **[verified]** |
+| Are the financial calculations defensible? | **No** | **Yes** | §E. The one open design question (R2) is now decided and implemented |
+| Is it secure enough to expose? | **No** | **Yes** | 9 security test classes, 4/4 endpoints fail closed, 422 bodies sanitised **[tested] [verified]** |
+| Would a real investor get usable, honest output? | **No** | **Yes, in hours and out** | §A above, §F. R7, the one open data-confidence question, is now resolved — the weak single-stock betas are a correct measurement of a genuinely dispersed window, not bad data |
+
+### Score: **9.0 / 10** (from 2.5)
+
+The 1.0 withheld, re-apportioned this cycle because R7 closed and two new
+defects opened: **the container image has still never been built** — no
+container runtime is installed on this machine — and nothing is deployed
+(−0.5); and two defects reached this cycle undetected, one of them a P0 that
+could only ever have fired in production (−0.5). R7 clearing does not raise the
+score, because what replaced it is worse: a crash that every test on this
+machine was structurally incapable of seeing.
+
+The repair itself is now committed — three commits on
+`repair/end-to-end-phase-2`, local only — so R5 is closed and no longer part of
+what is withheld.
+
+Raised from 8.5 this cycle: R2 decided and implemented (+0.5), R4 and R8
+closed, and the disclosure-deletion defect above found and fixed. The score
+did not rise further *because* of that find: a P0-class defect that sat
+undetected through two verification cycles is evidence about the coverage,
+not just about the code. What closed the gap was running the LLM boundary at
+all, rather than inspecting it.
+
+---
+
+## B. Issues resolved
+
+All 21 functional defects and 8 security defects from the original audit are
+resolved, each with at least one regression test — as are the 12 further
+defects found during the repair itself, including the 3 found this cycle while
+root-causing R7 and reproducing the production runtime. The full register with
+file paths, user-visible effect and pinning test is maintained in
+[`PRD.md`](PRD.md) §6; this section summarises by defect class and names the
+files changed. **Class ⑥ is new this cycle**, and it is the one worth reading
+first: it is the class the suite could not see.
+
+### ① Placeholder-as-measurement — 4 defects
+
+The class: a quantity that could not be computed returned a plausible number
+instead of failing. `return 1.0` for an unmeasurable beta is not a neutral
+default — it is the claim *"this holding moves one-for-one with the
+benchmark"*, and it sized contracts.
+
+The worst instance: `RiskAnalysisEngine._fallback_profile`, reached from a bare
+`except Exception`, returned a **structurally complete** `RiskProfile` — VaR =
+notional × 0.15, CVaR = notional × 0.20, `tail_correlation = 0.7`,
+`beta_vs_spy = 1.0`, both hedge ratios 1.0 — with nothing in it from data. L4
+then selected, priced, sized and ranked real contracts against an invented
+15% VaR and handed the user a contract count and a premium for it.
+
+**Resolution:** unmeasurable quantities raise `InsufficientFactorData` or
+return `None`; profiles carry `data_available` / `beta_available`; L4 declines
+to select against an unavailable profile; `_compute_portfolio_beta` excludes it.
+
+**Files:** `backend/core/risk/factor_decomposer.py`,
+`backend/engines/layer_03_risk_analysis.py`,
+`backend/engines/layer_04_instrument_selection.py`,
+`backend/models/risk_models.py`, `backend/data/covariance.py`,
+`backend/instruments/options/selector.py`
+
+**Pinned by:** `test_factor_decomposer.py::TestUnmeasurableRaises`,
+`test_degraded_risk_profile.py` (3 classes), `test_covariance.py::TestEstimateProvenance`,
+`test_selector.py::TestUnmeasuredLiquidity`
+
+### ② Truncate-before-align — 3 defects
+
+The class: each return series was windowed to its own last *N* rows **before**
+being joined, so two series ending on different dates were compared over
+different calendar periods. A tz-aware/tz-naive index pair collapsed the
+overlap to zero rows. Every cross-asset number was affected: beta,
+correlation, hedge ratio, covariance.
+
+**Resolution:** align first, then window. `align_series(**named)` normalises
+timezones. Historical-period mapping corrected; empty arrays refused rather
+than passed to the regime detector.
+
+**Files:** `backend/core/risk/factor_decomposer.py`, `backend/data/covariance.py`,
+`backend/data/market_data.py`, `backend/engines/layer_02_market_context.py`
+
+**Pinned by:** `test_factor_decomposer.py::TestAlignBeforeWindow`,
+`test_covariance.py::TestWindowAlignment`, `::TestAlignSeries`,
+`test_live_market_data.py::TestAlignment`, `::TestPriceHistory`
+
+### ③ Solver-artifact IV and unlisted contracts — 7 defects
+
+The class: Yahoo publishes `impliedVolatility` solved against a stale
+`lastPrice` when no two-sided quote exists, producing values like `0.00001`
+and a visible ladder of successive halvings of 1/16. Pricing on `0.00001` IV
+produced a ~$0 premium and a delta near `1e-5`; the sizer, asked to cover a
+position with a near-zero-delta hedge, requested **roughly 1.5 million
+contracts** — and presented it as a recommendation.
+
+**The insight that fixed it:** a two-sided quote is the precondition that makes
+an implied volatility a measurement. Without one there is no IV — and clamping
+to a plausible floor is still fabrication, because a clamped 5% IV yields a
+priced, tradeable-looking recommendation built on a quote nobody made. So
+implausible readings are **rejected, returning `None`**.
+
+Also in this class: synthetic $5-grid strikes that were never listed; a 7-day
+expiry offered as a 180-day hedge; a 34.7%-spread / 20-OI contract ranked best
+in book; ranking computed on the model price rather than the fill; a credit
+collar clamped to a $0.01 debit.
+
+**Resolution:** synthetic expiry and strike generation removed; `_resolve_strike`
+reads the real chain; `_sample_expiries` enforces horizon coverage;
+`_liquidity_score` and an executability filter screen candidates; `_rescore`
+ranks the executable price; `_apply_net_market_quote` preserves credit.
+
+**Files:** `backend/data/options_chain.py`, `backend/instruments/options/selector.py`,
+`backend/engines/layer_04_instrument_selection.py`,
+`backend/engines/layer_06_pricing_engine.py`, `backend/core/pricing/base_pricer.py`,
+`backend/core/pricing/equity_pricer.py`, `backend/data/data_cache.py`
+
+**Pinned by:** `test_iv_plausibility.py` (6 classes), `test_selector.py` (12 classes)
+
+### ④ Asserted label — 6 defects
+
+The class: a figure's units or horizon asserted by its consumer rather than
+reported by its producer. L3 scales VaR to the user's hedge horizon, but the
+models dropped the horizon, so the narrative said *"One-day 95% VaR"* and the
+UI said *"1mo VaR (95%)"*. The same position reads ≈$4.6K over one day and
+≈$42.2K over 120 days: **the tail loss was understated by roughly 9.1×**, and
+"1mo" was wrong for the 180-day default and for every input a user could pick.
+
+Also: calendar-vs-trading-day VaR scaling; parametric VaR labelled historical;
+moneyness read in the wrong direction, so the OTM caveat appeared on **no**
+recommendation while the pros list beside it advertised unlimited downside
+protection.
+
+**Resolution:** the horizon travels with the figure —
+`var_horizon_calendar_days` / `var_horizon_trading_days` on `RiskProfile` and
+`PortfolioRiskSummary` (all three L3 sites), `horizon_calendar_days` /
+`horizon_trading_days` on `UnhedgedRisk`, `var_horizon_days` in all three LLM
+prompt payloads, and a UI label **derived** from the response. Where the
+horizon is unknown, `_var_horizon_phrase()` names **no** horizon rather than
+defaulting to a wrong one.
+
+**Files:** `backend/models/risk_models.py`, `backend/models/hedge_models.py`,
+`backend/engines/layer_03_risk_analysis.py`, `backend/engines/layer_12_output_formatter.py`,
+`backend/engines/layer_11_llm_explainer.py`, `backend/core/explainer/prompt_builder.py`,
+`backend/core/risk/var_calculator.py`, `backend/instruments/options/selector.py`,
+`frontend/types/hedgeos.ts`, `frontend/app/page.tsx`
+
+**Pinned by:** `test_var_horizon_label.py` (6 classes, 22 tests),
+`test_disclosure_and_budget.py::TestMoneynessCaveat`, `::TestOptionPros`, `::TestOptionCons`,
+`test_risk.py`
+
+**Sixth instance, found this cycle while root-causing R7.** `covariance.py`'s
+docstring described the basis-risk estimate as a *"signed, 60-day rolling"*
+correlation. The code fits on `LOOKBACK_DAYS = 252`. The window was lengthened
+at some point and the docstring was not, so anyone reading the module to judge
+whether an R² of 0.08 was plausible was reasoning about a window roughly four
+times noisier than the one in use — which is precisely the mistake R7 invited.
+A comment that asserts a number the code does not use is the same defect class
+as a label that asserts a horizon the figure does not have; the fix states the
+real window and says that it changed.
+
+**File:** `backend/data/covariance.py`
+
+### ⑤ Silent substitution — 6 defects
+
+The class: a backstop that fills in for a failed or blank upstream must report
+that it ran. Three L11 paths left all four narrative fields empty, so *"the
+model had nothing to say about your risk"* and *"the explanation service is
+down"* rendered identically — as a blank panel.
+
+Then, found **during** the repair: a provider that was *available*, raised
+nothing, and returned **blank** fields fell through to the unconditional
+deterministic backstop, and the response went out with
+`llm_provider="huggingface"` and an **empty** `llm_notice` while every
+narrative field was template text. Template text presented as model analysis
+is exactly the substitution the rest of the pipeline exists to prevent.
+
+Also: nothing summed the per-holding hedge costs, so each hedge passed its own
+gate while the **total** could exceed the user's budget.
+
+**The worst instance of this class was found last, while closing R4, and was
+live in the default configuration.** The selector states three facts in
+`candidate.cons` — no executable two-sided quote, thin market, expiry crosses
+earnings. Both explainer layers merged a model reply by **replacing** that
+list:
+
+```python
+if explanation.cons:
+    candidate.cons = explanation.cons
+```
+
+`run_l11_llm` defaults to `True`. So a model returning its own bullets deleted
+the product's disclosures from the response, and the user was shown a hedge
+with its premium's provenance silently removed. Proven, not inferred: a stub
+provider was stood up behind the real `OllamaExplainer`, the real pipeline and
+the real HTTP route, and asked for a reply containing only its own cons. With
+the fix reverted, the live `POST /portfolio/analyze` returned **5 of 6
+candidates with their disclosure deleted** — an MSFT protective put on a
+contract quoted **8.9% wide**, described to the user as nothing worse than
+*"Premium is a cost drag"*. With the fix in place, the same request over the
+same market: **5 recorded, 0 deleted**.
+
+Why two verification cycles missed it: no `ANTHROPIC_API_KEY` was configured,
+so every previous run took the deterministic-fallback branch and never
+reached the merge at all. The disclosures were verified in the browser and in
+`test_e2e_api.py` — on the one path where nothing could delete them.
+
+And alongside it, a second substitution in the same subsystem:
+`get_explainer()` returned `ClaudeExplainer` for **every** provider name it
+did not recognise, and it recognised only `"huggingface"`. So
+`llm_provider=ollama` sent the portfolio to Anthropic with nothing in the logs
+to say the configured provider had been ignored — and `OllamaExplainer` was
+unreachable through the factory in any case, since `settings.ollama_model` and
+`settings.ollama_base_url` were referenced by it but never declared, so
+constructing it raised `AttributeError`. A whole provider had never worked.
+
+**Resolution:** `_deterministic_narrative` returns the names of the fields it
+filled; `run()` sets a full-substitution notice when it wrote all four, a
+partial notice naming the specific sections when it wrote some, and **no
+notice** when the model wrote everything — because a notice there would be a
+false warning. Portfolio-level budget summed and enforced.
+
+For the disclosure deletion: `cons` stays the single list the UI renders, so
+nothing about the display changes, and a second record is added that the LLM
+has no path to. `backend/core/disclosures.py` exposes `disclose()`, which
+writes both, and `restore()`, which is called after **every** merge in both
+layers and puts back whatever the merge dropped — in front of the surviving
+cons, because a caveat under four bullets of model prose is a caveat nobody
+reads. Scope is deliberately the three hard disclosures and not every
+sentence the product generates: rewriting the basis-R² prose into better
+English is the explainer's job and loses nothing material, while dropping
+*"this price is not real"* is a different kind of event.
+
+For the factory: `"ollama"` is now wired, its two settings are declared, and
+an unrecognised provider name is **logged at ERROR** naming both the rejected
+value and the fact that Anthropic will answer instead. It remains a fallback
+rather than an error — an unreadable provider name must not take the pipeline
+down — but a loud one.
+
+**Files:** `backend/engines/layer_11_llm_explainer.py`,
+`backend/engines/layer_05_llm_explainer.py`, `backend/core/disclosures.py` (new),
+`backend/core/explainer/__init__.py`, `backend/config/settings.py`,
+`backend/models/hedge_models.py`,
+`backend/engines/layer_10_evaluator.py`, `backend/engines/pipeline_orchestrator.py`,
+`backend/instruments/options/selector.py`, `backend/instruments/options/position_sizer.py`,
+`backend/engines/layer_07_position_sizer.py`, `backend/core/sizing/equity_sizer.py`
+
+**Pinned by:** `test_llm_fallback.py::TestFallbackPaths`,
+`test_var_horizon_label.py::TestNarrativeSubstitutionIsDisclosed`, `::TestEngineDisclosesSubstitution`,
+`test_disclosure_and_budget.py::TestPortfolioBudget`, `test_selector.py::TestHoldingBudget`,
+`test_disclosures.py` (19 tests: 4 on the record itself, 7 on the L11 merge,
+2 on L5, 2 guarding that the selector still produces them, 4 on the factory),
+`test_pipeline.py::TestDisclosuresSurviveTheLLMLayers` (6, full pipeline),
+`::TestAFailingL5DoesNotFailTheRun`
+
+#### Sixth instance, found this cycle: the history path served dividend-unadjusted prices
+
+The two history paths disagreed about what a price *is*. The primary path,
+`_yahoo_history_direct`, read `indicators.quote[0].close` — split-adjusted but
+**not** dividend-adjusted. The fallback called yfinance with
+`auto_adjust=True`, which is both. The same ticker therefore returned a
+different history depending on which path happened to answer, and nothing
+anywhere said so.
+
+This is a substitution because a total-return series and a price series are
+not interchangeable inputs to a return calculation, and the product uses these
+for factor regressions, covariance and VaR. Measured impact over one year:
+
+| Ticker | Unadjusted | Adjusted | Δ |
+|---|---|---|---|
+| HYG | **−4.25%** | **+1.63%** | sign flip |
+| TLT | −7.0% | −2.5% | ~4.5pp |
+| LQD | −3.2% | +1.3% | ~4.5pp |
+
+**Three of the five `MACRO_TICKERS` are the worst affected**, because the
+macro set is deliberately the high-yielding instruments — bond and credit
+ETFs — where the dividend is most of the return. Over two years the price
+*levels* diverge by 9–12%.
+
+**Why it survived every prior cycle:** annualised volatility moves by at most
+0.37pp under the adjustment, and volatility is what the existing data-quality
+checks look at. A defect that only moves the *drift* passes every plausibility
+gate aimed at the *dispersion*.
+
+**Resolution:** the request now asks for `includeAdjustedClose=true` and a
+ratio factor `adjclose / close` is applied to **all four** OHLC columns rather
+than substituting `adjclose` for `Close`. Substituting would have been wrong:
+`adjclose` is scaled while `high` and `low` are not, which on NVDA's 5-year
+series puts the close outside `[Low, High]` on **107 of 1254** bars. If the
+provider returns no adjusted close, the bars are left on a price basis and the
+provenance ledger records `history_adjustment:<ticker>` as **unavailable** —
+disclosed, not faked.
+
+Verified after the fix: **0** out-of-band bars across 7 tickers × 501 bars,
+and the two paths now agree to 8×10⁻⁷ with return correlation 1.000000.
+
+**File:** `backend/data/market_data.py`
+
+**Pinned by:** `test_price_adjustment.py` (5 classes, 16 tests — the fixture
+sets High/Low against the *unadjusted* close with a 0.90 factor, so a
+substituting implementation fails and a scaling one passes),
+`test_live_market_data.py::test_both_fetch_paths_return_the_same_adjusted_series`,
+`::test_the_adjusted_bars_are_internally_consistent`. Revert-verified: **7 of
+14 fail** without the fix.
+
+**The synthetic harness had to be fixed too, and the assertion left alone.**
+Supplying no `adjclose` made the harness emit 25 `history_adjustment:
+unavailable` records and fail `test_a_fully_quoted_run_is_not_marked_degraded`.
+Before touching anything, real Yahoo was checked: it returns `adjclose` for
+**every** instrument queried, including the dividend-free `^VIX` family. So the
+harness was asserting a defect into existence. It now emits `adjclose == close`
+— factor exactly 1.0 — and the assertion stands untouched.
+
+### ⑥ Verified-here-only — 2 defects, one of them P0
+
+**The class, named this cycle:** *a code path that behaves differently because
+production's filesystem, permissions or installed dependencies differ from the
+developer's is not a verified path, however green the suite is.* This is the
+second time the lesson has been paid for — the ⑤ disclosure-deletion defect
+survived two cycles because no `ANTHROPIC_API_KEY` was set here, so the merge
+code never ran. The two below survived because a developer's directory is
+writable and a container's is not.
+
+#### (a) The cache crashed the request on a read-only filesystem — **P0, production-only**
+
+`data_cache.py` opened SQLite at a fixed path inside the application tree and
+let every error propagate. Reproduced deliberately with `chmod 555` on the
+containing directory: `cache_set` and, through it, `get_price_history` both
+raised `sqlite3.OperationalError: attempt to write a readonly database`
+**after the market-data fetch had already succeeded**. The answer was in hand
+and was thrown away along with the request.
+
+Under the shipped `Dockerfile` this was not hypothetical. `/app/backend` is
+root-owned, the container runs as `USER optionq`, and SQLite must write both
+the database **and** a journal file beside it. Every analysis request would
+have failed on Cloud Run. Not one test on this machine could have seen it,
+because every directory a test touches here is writable.
+
+**Resolution, in three parts.** The path is now *resolved* rather than
+assumed — `OPTIONQ_CACHE_DB`, then a platform-specific location, then the
+system temp directory — and each candidate is **probed with a real
+transaction**, because `os.access` and a bare `sqlite3.connect` both report
+success on a directory SQLite cannot actually write. All three public
+operations are guarded, and the write guard carries the reason in the code:
+
+> *Failing to store a value the caller already has in hand must never fail the
+> caller. This is the line that took the container down: the fetch had
+> succeeded and the result was discarded along with it.*
+
+If no location works, caching is **disabled and disclosed** — the ledger
+records that every value is fetched live, which is slower and costs more rate
+limit but is never stale. Degrading silently to an uncached product would have
+been class ⑤ all over again.
+
+**Files:** `backend/data/data_cache.py`, `Dockerfile` (writable
+`/var/cache/optionq`, owned by the runtime user, with `OPTIONQ_CACHE_DB`
+pointed at it)
+
+**Pinned by:** `test_cache_resilience.py` (4 classes, 14 tests). The fixture
+seeds a real database and then `chmod`s its directory to `r-x`, **reproducing
+the permission condition rather than mocking it** — a mocked
+`OperationalError` would have passed against the broken code too.
+Revert-verified: **3 of 14 fail**, including the one that asserts a price
+fetch still returns.
+
+**A test caught a hole in this fix, and the code was changed, not the test.**
+`test_a_disabled_cache_is_disclosed_on_the_ledger` failed: with caching fully
+disabled, `cache_set` returned early at `conn is None` without recording
+anything. An early return is not an exception path, so it needed its own
+disclosure — added at all three such returns.
+
+#### (b) The local cache database was shipped inside the image
+
+6.4MB of this machine's query history was being copied into a published layer
+by `COPY . .`. Worse than dead weight: the file arrived **readable but not
+writable**, so cache *reads* returned a developer's months-old prices while
+*writes* failed — the exact combination that makes a failure look
+intermittent. `.dockerignore` now excludes `*.db`, `*.sqlite*` and SQLite's
+journal and WAL sidecars. Verified on the staged tree: **0** `.db` files, and
+no secrets.
+
+### Security — 8 defects
+
+| Defect | Resolution |
+|---|---|
+| `/admin/retrain/main` — a blocking, CPU-bound retrain — had **no authentication at all** | `require_admin` on every `/admin/*` route |
+| `_verify_cron_secret` returned early when `CRON_SECRET` was unset (*"no secret configured — open access"*), exposing model retraining to anyone who could reach the host | **Fails closed**: 503 when unset or under 16 chars |
+| Secret compared with `!=`, leaking its prefix through response timing | Constant-time comparison |
+| **Nine** handlers raised `HTTPException(500, detail=str(exc))`, forwarding file paths, driver errors and provider URLs | Sanitised; no handler forwards `str(exc)` |
+| Admin and cron credentials not scoped | Neither unlocks the other |
+| No startup configuration validation | Validated at boot; missing secrets logged as refusals |
+| CORS unreviewed | Origin from `FRONTEND_URL` |
+| Dependency incompatibilities, Docker/cloud config | `requirements.txt`, `Dockerfile`, `.dockerignore`, `backend/.env.example` |
+
+**Files:** `backend/api/security.py` (new), `backend/api/routes_monitor.py`,
+`backend/api/routes_portfolio.py`, `backend/api/routes_hedge.py`,
+`backend/main.py`, `backend/config/settings.py`, `Dockerfile`,
+`.dockerignore`, `backend/.env.example`, `backend/requirements.txt`,
+`api/requirements.txt`
+
+**Pinned by:** `test_security.py` (9 classes)
+
+### Defects found and fixed *while verifying* R1 and R3 — 6 more
+
+Closing the two open verification items surfaced six further defects. Five are
+in the product; one was in the verification itself. This is the argument for
+closing verification gaps rather than carrying them: the gaps were hiding
+live bugs.
+
+**① Placeholder-as-measurement, in two new places.** L3 was deliberately
+changed earlier in this repair to stop emitting `0.5` for an unmeasurable
+basis R², because at a 15% scoring weight `0.5` reads as a middling-but-real
+relationship — so an unmeasurable hedge outscored one honestly measured as
+weak. The fix emitted `0.0` with a disclosed reason. But
+[`layer_10_evaluator.py:121`](backend/engines/layer_10_evaluator.py#L121)
+mapped that `0.0` **straight back to `0.5`** (`if r2 <= 0: return 0.5 # unknown
+basis — neutral`), reinstating the placeholder one layer downstream and
+restoring the exact ranking inversion L3's fix removed. A third instance sat
+in the selector as a function default, `basis_r2: float = 0.5`, which was
+formatted directly into user-facing rationale text as though it had been
+measured. Both are gone. The distinction only became *expressible* because R3
+added `basis_risk_source`: `0.0` with a source is a measurement, `0.0` without
+one is ignorance, and they must not score alike.
+
+**④ Asserted label, twice more.** The selector listed
+`f"Basis R²={basis_r2:.2f} — reasonable hedge tracking"` as a **pro**
+unconditionally, so a measured R² of 0.08 was presented to the user as a point
+in the hedge's favour — directly contradicted by the number inside the same
+sentence, and by the cons list, which stated the tracking honestly. The pro is
+now earned (≥0.50 "tracks closely", ≥0.25 "partial tracking") or absent.
+Separately, the spread builder's fallback to `profile.tail_correlation` set a
+real measurement with no source, which under the new scoring would have read
+as unmeasured; it now labels itself.
+
+**Security / UX — the raw pydantic 422 body.** No `RequestValidationError`
+handler existed anywhere in the backend, so FastAPI returned pydantic's error
+objects verbatim. A holding submitted without `position_type` produced
+`"msg": "Unable to extract tag using discriminator 'position_type'"`, a `ctx`
+naming the discriminator, and an `input` echoing the submitted position data
+back to the caller. `frontend/lib/api.ts` copies `msg` straight into the field
+error it renders, so that sentence reached the user. The existing leak
+assertions looked for paths, stack frames and module names — none of which
+this body contains — so it passed all of them.
+[`backend/api/validation_errors.py`](backend/api/validation_errors.py) now
+translates each error to a sentence, keeps `loc` intact for field
+highlighting, drops `ctx`/`input`/`type`, and logs the untranslated original
+server-side. Verified against the running service:
+`holdings[0] must include "position_type" so we know which kind of entry it is.`
+
+**The verification's own defect.** `_is_us_market_hours()` subtracted a flat
+five hours from UTC — EST, not ET — so during EDT it enforced 10:30–17:00.
+It skipped the two-sided-quote assertion for the first hour of every summer
+session and kept asserting for an hour after the close. This is the third
+false signal from my own checks this repair (after `self.` matching
+"itself." and a case-sensitive regex against a CSS-uppercased heading), and
+the rule holds: **a check that misfires on correct output trains the reader to
+ignore it.** All three are fixed.
+
+**Pinned by:** 11 new tests in `test_selector.py` (basis-risk scoring, prose,
+provenance) and 6 in `test_e2e_api.py` (422 sanitisation). The basis-risk
+tests were revert-verified: 3 fail against the old `_basis_score`, 6 pass
+against the fix.
+
+### Change set
+
+45 tracked files modified (**+6,784 / −1,032**), plus 29 new files totalling
+9,846 lines of new Python/TypeScript/Markdown: **17** test files, 5 new backend
+modules and fixtures (`backend/api/security.py`,
+`backend/api/validation_errors.py`, `backend/core/disclosures.py`,
+`backend/data/data_quality.py`, `backend/data/portfolio_valuation.py`,
+`backend/tests/fixtures/synthetic_market.py`), and `pytest.ini`,
+`.dockerignore`, `backend/.env.example`, `CLAUDE.md`, `PRD.md` and this
+report.
+
+**Committed as three commits on `repair/end-to-end-phase-2`** — backend,
+frontend, docs — each verified by its own gate before being made. Local only:
+nothing is pushed and nothing is deployed. See R5 in §C.
+
+---
+
+## C. Remaining issues
+
+| # | Issue | Severity | Why it is still open |
+|---|---|---|---|
+| ~~R1~~ | ~~Market-hours pricing unverified.~~ **CLOSED 2026-10-29 09:58 EDT.** 21/21 live tests pass; `premium_source=market_mid`, `iv_source=contract_iv`; liquidity screen rejects 68/165 live strikes (67 OI, 1 spread). The DST bug in the market-hours gate that had been suppressing the key assertion is fixed. | — | Observed, not inferred. §A. |
+| ~~R2~~ | ~~The no-valid-quote question is unresolved.~~ **CLOSED.** Decided and implemented: the refusal is conditional on the venue demonstrably quoting. `L4._refuse_unquotable_hedges` withholds a holding's candidates only when *some other* instrument in the same run carries an executable two-sided quote; if nothing is quoted anywhere, the provider is silent and disclosed theoretical premiums stand. 12 tests, 4 revert-verified; armed and correct on a live market-hours run. | — | See the appendix. The decision turned on asymmetric cost, not on preference. |
+| ~~R3~~ | ~~Risk-estimate provenance computed but not exposed.~~ **CLOSED.** `RiskEstimateProvenance` now travels on every `HedgeRecommendation`, and `basis_risk_source` / `_n_obs` / `_window_days` / `_stderr` on every `InstrumentCandidate`; `corr_stderr` finally has a consumer. Rendered and verified in the browser. | — | Resolved by extending `HedgeOutput` rather than adding a sibling endpoint: a sibling lets a client render a beta without ever fetching its standard error. |
+| ~~R4~~ | ~~Layer 5 (preliminary LLM pass) lightly exercised.~~ **CLOSED.** It is off by default (`run_l5_prelim_llm = False`), so it was untested-by-default code rather than a defect. Its `explain()` docstring claimed *"Never raises — all LLM failures are caught and logged"* while the method has no `try/except`; the docstring is corrected to say what is actually true — the orchestrator's guard is what makes a failure non-fatal — and that guard is now pinned by a test that raises from L5 and asserts the run still produces candidates. The merge path is covered by 2 tests. | — | Closing it is what surfaced the ⑤ disclosure-deletion defect. |
+| ~~R5~~ | ~~Nothing is committed.~~ **CLOSED.** The repair is committed to the branch `repair/end-to-end-phase-2` as three commits — backend (68 files), frontend (3 files), docs and `.gitignore` — each one verified by its own gate before being made: the backend suite at 674/31/0, `tsc --noEmit` and `eslint` clean for the frontend. **Local only. Nothing is pushed and nothing is deployed**, both of which need explicit approval. | — | Three commits rather than one per repair stage: the changes are interdependent, and committing intermediate states that no suite passes against would have made the history look incremental while being less honest than three commits that each pass their own verification. The working tree now holds only seven verification screenshots, left untracked as a record of one browser run rather than repository content. |
+| R6 | **Disclosure volume still high.** 8 user-facing warnings on the live market-hours run, down from 37 pre-market and 78 before grouping. Honest, but still dense out of hours. | **P2** | Grouping fixed the duplication, and the market-open run shows most of the remaining volume was genuinely degraded pre-market data rather than a presentation problem. Further reduction risks hiding things. |
+
+| ~~R7~~ | ~~Single-stock return data shows an implausibly weak correlation structure.~~ **CLOSED — and it was never a defect.** Root-caused, not explained away. Two things were conflated. **(a) The data is right.** The product's return series is **byte-identical** to an independent recompute straight from the raw Yahoo JSON — `maxdiff = 0.00e+00` for both the AAPL and the SPY leg — so no stage of the pipeline is distorting it. **(b) The window is the whole story.** `LOOKBACK_DAYS = 252` is what the product actually fits on; the same two series over 500 sessions give AAPL/SPY R²=**0.354**, ρ=**+0.595**, β=**1.03**. Single-stock/index correlation genuinely collapsed over the trailing twelve months — XOM/SPY flips **+0.115 → −0.329** between the two windows — while index-replication pairs are window-invariant by construction (VOO/SPY 0.994 → 0.996). Mega-cap dispersion, correctly measured. And correctly *gated*: SPY is **rejected** as an AAPL cross hedge at R²=0.084 < `MIN_CROSS_R2 = 0.30`, which is the system declining to sell a hedge it cannot justify. | — | The anomaly was real, the alarm was right to raise it, and the answer is that a 252-day ρ of 0.29 is what AAPL/SPY *was* over this particular year. Pinned by the live-provider suite, which asserts both legs carry identical dates and 501 observations. |
+| ~~R8~~ | ~~Zero-share and similar edits re-run against a stale result view.~~ **CLOSED**, and root-caused past the reported symptom: *any* unre-run edit left real figures beside inputs they did not describe — editing 500 shares to 5,000 left a VaR for 500 shares on screen with nothing to say which portfolio it belonged to. The page now records the exact payload each result was computed from, flags divergence with a banner and a re-run button, and clears the result outright when the form can no longer be analysed. Browser-verified, 28/0. | — | The reported case was a validation-path instance of a general staleness problem. |
+
+**No P0 defect remains open, and R6 is the only item still open.** R1, R2, R3,
+R4, R5, R7 and R8 are closed — R1, R3 and R7 by investigation, R2 by a decision
+now implemented and tested, R4 and R8 by repair, R5 by committing. R6 (warning
+density out of market hours) stays open by judgement: grouping fixed the
+duplication, the market-open run showed most of the remaining volume was
+genuinely degraded pre-market data, and reducing it further risks hiding
+things.
+
+**R7 is closed by root cause, not by argument.** The previous cycle recorded
+it as *"unresolved rather than explained away"*, which was the right call on
+the evidence then available but is no longer the state of knowledge. Two
+measurements settled it: the product's series matches an independent recompute
+from raw provider JSON to the last bit, and the weak R² reproduces or
+disappears purely as a function of window length while index-replication pairs
+do not move. The product also behaves correctly on the finding — it renders
+*"beta fitted on 252 sessions, R² 0.08"* **and refuses the hedge**, rather than
+sizing against a beta it does not believe.
+
+What this cycle opened in R7's place is in §B① below: the history path was
+returning **dividend-unadjusted** prices, and the cache crashed on a read-only
+filesystem. Neither was visible from this machine without deliberately
+reproducing production's conditions.
+
+---
+
+## D. Test results
+
+### Automated
+
+| Suite | Result |
+|---|---|
+| **Full backend suite** | **674 passed, 31 skipped, 0 failed** — 91.4s and 52.1s on two runs |
+| **Live-provider suite, market open** | **21 passed, 0 skipped** in 2.6s — `OPTIONQ_LIVE_TESTS=1`, 09:58 EDT 2026-10-29 |
+| Skips in the default run | The same 21 live tests, excluded by the opt-in gate rather than by failure |
+| End-to-end API integration (`test_e2e_api.py`) | **59 passed** offline |
+| **Browser-driven UI journey** | **28 passed, 0 failed, 7 informational** — real Chromium against the static production export and the live backend |
+| Frontend | `tsc --noEmit` clean; `eslint app lib types` clean |
+| **Live run with an LLM provider wired** | **Fix proven both ways** over the real HTTP route: 5 disclosures deleted with the fix reverted, 0 deleted with it in place |
+
+New tests this cycle (+30 over 644): **16** in `test_price_adjustment.py` for
+the dividend-adjustment fix, **14** in `test_cache_resilience.py` for the
+read-only-filesystem crash, and **2** added to the live-provider suite — which
+is why the default-run skip count rose from 21 to 31 (10 of the live tests are
+newly parameterised across tickers).
+
+The cycle before that (+75 over 569): 8 pinning risk-estimate provenance in the
+API response, 11 pinning basis-risk scoring and its prose, 6 pinning the
+sanitised 422 body, 12 for the R2 no-market gate, 12 asserting the deployment
+image against what the code imports, 19 for the disclosure record and the
+explainer factory, and 7 driving the LLM layers through the whole pipeline.
+
+Both of this cycle's suites were revert-verified: price adjustment **7 of 14
+fail** without the fix, cache resilience **3 of 14 fail**. Neither was written
+against a mock of the failure — the cache suite `chmod`s a real directory and
+the price suite builds a payload whose High/Low sit against the *unadjusted*
+close, so an implementation that substitutes `adjclose` rather than scaling by
+it fails.
+
+Every one was confirmed to fail against the unfixed code before being
+accepted. The reverts: basis-risk 3 failures → 6 passes; R2 gate 4 failures →
+12 passes; disclosure unit tests **6 of 15** failures → 15 passes; the
+full-pipeline disclosure tests 2 failures → 7 passes. The two that *didn't*
+fail on revert are listed as guards-on-the-guard, not as regressions —
+`test_the_explainer_actually_ran` and
+`test_some_candidate_carried_a_disclosure_to_begin_with` exist precisely so
+the class cannot pass vacuously, which it would otherwise have done against
+the fully-quoted fixture market (it did, once, and the fixture was changed to
+the overnight snapshot rather than the assertion relaxed).
+
+### Coverage by area
+
+| Area | File | Classes |
+|---|---|---|
+| Options pricing | `test_pricing.py`, `test_instruments.py` | BSM, binomial, Black-76, Greeks, sizer |
+| IV integrity | `test_iv_plausibility.py` | 6 |
+| Instrument selection | `test_selector.py` | 14 (incl. the R2 no-market gate) |
+| Sizing | `test_sizing.py` | 8 |
+| Risk / VaR | `test_risk.py`, `test_var_horizon_label.py` | 6 + module-level |
+| Factor / beta | `test_factor_decomposer.py` | 3 |
+| Covariance / cross-hedge | `test_covariance.py` | 5 |
+| Degraded risk paths | `test_degraded_risk_profile.py` | 3 |
+| Disclosure & budget | `test_disclosure_and_budget.py` | 4 |
+| Data provenance | `test_data_quality.py` | 5 |
+| LLM fallback | `test_llm_fallback.py`, `test_explainer.py` | 5 + 3 |
+| **Disclosure survival & explainer factory** | `test_disclosures.py` | 5 |
+| **Deployment config contract** | `test_deployment_contract.py` | 3 |
+| **Price-history adjustment** | `test_price_adjustment.py` | 5 (16 tests) |
+| **Cache resilience on a read-only filesystem** | `test_cache_resilience.py` | 4 (14 tests) |
+| Security | `test_security.py` | 9 |
+| Pipeline integration | `test_pipeline.py` | 11 (incl. the LLM layers end to end) |
+| **HTTP API end-to-end** | `test_e2e_api.py` | 10 |
+| Live data (opt-in) | `test_live_market_data.py` | 4 (incl. both fetch paths agreeing on the adjusted series) |
+
+### Test integrity
+
+No assertion was weakened to make a test pass. Specifically:
+
+- Where a test failed because a **fixture** was wrong, the fixture was fixed —
+  e.g. a `PortfolioInput` left `total_notional = None`, which made a
+  disclosure test pass **for the wrong reason** (via the generic exception
+  path rather than the successful-but-blank path under test). That was called
+  out and corrected rather than accepted.
+- Where `pytest.approx(_trading_days(120), rel=1e-6)` failed on 82.79 vs
+  82.7926…, the assertion was changed to `== round(_trading_days(120), 2)` to
+  match what the calculator actually reports — not to a looser tolerance.
+- The end-to-end test's leak detector produced a **false positive** (the
+  substring `self.` matched the English word *"itself."* in a legitimate
+  rationale). The markers were narrowed to regexes anchored on word
+  boundaries, **and two tests were added to pin the detector itself** — one
+  proving it still fires on a real traceback, one proving it stays quiet on
+  product prose. A marker that fires on correct output trains the reader to
+  ignore the check; a marker narrowed without a counter-test can silently stop
+  detecting anything.
+- Two warning assertions (`"garch:SPY" in w`, `"var:IPO" in w`) broke when
+  warnings became grouped. Both were updated to assert the field **and** the
+  subject separately — the same intent, expressed against the new format —
+  rather than reverting the grouping.
+- A disclosure test initially passed **vacuously**: run against the
+  fully-quoted fixture market, no candidate carried a disclosure at all, so
+  "no disclosure was deleted" was trivially true. The fixture was switched to
+  the overnight snapshot (`ChainConfig(quotes_published=False)`), which is
+  what makes the selector say *"premium shown is theoretical"*, and a
+  precondition test was added so the class can never pass that way again.
+- One of those tests then failed for a reason that turned out to be **the
+  test's fault, not the code's**: it asserted a disclosure always leads the
+  `cons` list, but L11 only explains the top three candidates per holding, so
+  a candidate the model never saw legitimately keeps the selector's own
+  ordering. The assertion was narrowed to candidates that were actually
+  rewritten — the front-of-list guarantee is about a *replaced* list — rather
+  than reordering every candidate's cons to make the original assertion true.
+- The product pipeline is never mocked. The end-to-end test substitutes
+  exactly two things: the market-data provider and the language model. Both
+  are **network boundaries, not product logic**. The LLM-layer tests in
+  `test_pipeline.py` substitute the model's *reply* and nothing else: the
+  engine, the real `_merge_explanation`, the scorer and the formatter all
+  execute. The live proof in §B ⑤ goes further and substitutes only the
+  Ollama HTTP endpoint, so the real `OllamaExplainer`, its real JSON parser
+  and the real FastAPI route are all in the path.
+
+### Performance note
+
+Suite runtime fell from 172s to 84s by making two fixtures module-scoped
+(`test_e2e_api.py`, `test_pipeline.py`). Both fixtures' own docstrings already
+described them as shared by read-only assertions; function scope was re-running
+the entire product — Monte Carlo included — once per assertion. No test mutates
+the shared output.
+
+---
+
+## E. Financial verification
+
+All figures below are from the live run at 05:50 ET on 2026-10-29, portfolio
+AAPL 400 / IWM 300 / TLT 500 / GLD 200, 120-day horizon, 15% protection, 3%
+budget. **[verified]**
+
+| Property | Observed | Verdict |
+|---|---|---|
+| **Valuation** | Market 337,116 vs cost 234,000, P&L 103,116 | ✅ Market value from current prices; cost basis separate, not substituted |
+| **Budget derivation** | 10,113.48 = exactly 3.0% of 337,116 | ✅ Budget is a share of **market** value, not cost basis |
+| **Budget enforcement** | Total hedge cost 7,328 / 10,113 = **72.5%** | ✅ Portfolio-level, not per-holding |
+| **VaR horizon** | Narrative: *"Over the 120-day hedge horizon, 95% VaR is $42.2K and 95% expected shortfall $68.8K"*; all four `unhedged_risk` blocks report `horizon_calendar_days = 120` | ✅ Horizon reported, not asserted. Was *"One-day"* / *"1mo"* for the same figure |
+| **Horizon arithmetic** | `_trading_days(120) = 82.79`; ratio of 120-day to 1-day VaR = √82.79 ≈ 9.1 | ✅ Trading days, not calendar days **[tested]** |
+| **VaR method labelling** | `parametric_cornish_fisher` with GARCH sigma, or `assumed_vol_fallback` below `MIN_OBS_FOR_MOMENTS = 30` | ✅ Named for what it is |
+| **Portfolio beta** | 0.73 to SPY, excluding holdings whose beta is unmeasurable | ✅ No `1.0` placeholders weighted in |
+| **Contract reality** | 14 candidates; **0** without an OCC symbol; **0** with a strike unverified against the chain; **0** OCC/strike mismatches | ✅ Every recommendation is a real listed contract |
+| **Contract sizing** | All counts whole, positive, correct multiplier, hedge instrument's spot | ✅ **[tested]** |
+| **Premium provenance** | `premium_source = {model: 14}` | ⚠️ Correct and disclosed out of hours — **but the `market_mid` path is unproven live** (R1) |
+| **IV provenance** | `iv_source = {realized_vol: 14}` | ⚠️ Same — the `contract_iv` skew path is unproven live (R1) |
+| **Honest refusal** | *"No hedge for TLT fits the cost budget and liquidity constraints; the position is shown unhedged."* | ✅ No forced recommendation |
+| **Regime** | `mid_vol` via `gmm_combined`, `degraded = False` | ✅ Source disclosed |
+| **Provenance ledger** | `{cache: 51, live: 18, unavailable: 33, fallback: 18}`; 51 degraded points → 36 grouped lines, **every degraded field still named** | ✅ Verified by the script, not assumed |
+
+### Numerical regression tests added
+
+Cornish-Fisher VaR scaling, trading-day conversion, Greeks (BSM / binomial /
+Black-76), net and collar Greeks, contract multipliers, protection-level
+tracking, budget monotonicity (*a tighter budget never costs more*), spread
+cost below its long leg, credit-structure sign handling, and R²-vs-correlation
+admission arithmetic. **[tested]**
+
+### The financial judgement call, now made
+
+**R2 — decided and implemented.** Out of hours, no contract has a two-sided
+quote, so every premium is theoretical. Refusing all of them would make the
+product useless for two thirds of the day; ranking all of them invites the
+user to size a position in a contract nobody will fill. Both framings were
+wrong because they answered the wrong question: *"is this premium quoted?"*
+rather than *"is anything quoted right now?"*
+
+The gate is therefore conditional and self-calibrating. If any instrument
+anywhere in the run carries an executable two-sided quote, the venue is
+quoting, and a holding with none has **no market** — its candidates are
+withheld and the holding is reported unhedged with the reason stated. If
+nothing is quoted anywhere, the provider is silent and nothing can be
+concluded about any single contract, so disclosed theoretical premiums stand.
+
+No market calendar is involved, deliberately: a calendar has to be maintained
+and would refuse hedges wrongly on every holiday it missed. The asymmetry is
+also deliberate — a missed refusal leaves a disclosed theoretical premium on
+screen, while a wrong refusal silently removes a hedge the user could have
+placed — so the refusal fires only on positive evidence that quoting works
+right now.
+
+**And the disclosure that makes the "theoretical premiums stand" branch
+acceptable was, until this cycle, deletable by the LLM layer.** That branch is
+only defensible because the user is told plainly what they are looking at; §B
+⑤ is the defect that removed the telling. The two findings belong together:
+R2's resolution depends on the disclosure surviving to the response, which is
+now tested at the unit, pipeline and live-HTTP levels.
+
+---
+
+## F. End-to-end user journey
+
+| Step | Status | Evidence |
+|---|---|---|
+| 1. Enter positions (ticker, quantity, cost, date, asset class) | **Verified** | 4 asset classes accepted; 422 with sanitised message on bad input **[tested] [verified]** |
+| 2. Set constraints (horizon 30–365d, protection 5–30%, cost 1–15%) | **Verified** | Honoured end to end; budget = 3% of market value exactly **[verified]** |
+| 3. Submit and wait | **Verified** | 200 in 14.9s; per-route `AbortSignal.timeout` client-side, `asyncio.timeout` server-side **[tested]**; spinner and typed `UiError` **[code]** |
+| 4. Portfolio summary (value, cost, P&L, VaR, ES, beta, regime) | **Verified** | 337,116 / 234,000 / 103,116; VaR $42.2K over a **named** 120-day horizon; beta 0.73; `mid_vol` **[verified]** |
+| 5. Per-holding recommendations | **Verified** | One entry per holding; TLT returned unhedged **with a stated reason** **[verified]** |
+| 6. Candidate detail (contract, strike, expiry, premium, Greeks, provenance) | **Verified** | 14 candidates, all OCC-verified; `premium_source` and `iv_source` on every one **[verified]** |
+| 7. Budget bar / cost comparison | **Verified** | 7,328 / 10,113 = 72.5% **[verified]** |
+| 8. Narrative explanation | **Verified** | Produced with no model available, and `llm_notice` **says so** **[verified]** |
+| 9. Disclosures and data quality | **Verified** | Ledger + grouped warnings (8 on the market-open run, 37 pre-market); every degraded field named **[verified]** |
+| **9b. Disclosures survive an LLM rewrite** | **Verified** | Live `POST /portfolio/analyze` with a provider wired in: all 6 candidates rewritten by the model, all 5 disclosures still present and leading the `cons` list. Same request with the fix reverted: **5 deleted** **[verified] [tested]** |
+| **Failure scenarios** | **Verified** | 5/5 malformed inputs → 422 sanitised; malformed JSON → 422; unknown route → 404; 4/4 privileged endpoints → 503 fail-closed; **no internals leaked anywhere** **[verified]** |
+| **Market-hours journey** | **Verified** | 2026-10-29 09:53–09:58 EDT. 21/21 live tests; `premium_source=market_mid`, `iv_source=contract_iv`; SPY 95% put 10.30/10.37 (0.68% spread); 163/165 strikes two-sided; screen rejects 68/165 **[verified]** |
+| **Rendered UI** | **Verified** | Driven in Chromium against the static production export and the live backend: **23 passed, 0 failed**. The horizon-labelled VaR, the R3 provenance strip ("beta fitted on 252 sessions, R² 0.08"), the contract & data provenance panel, a real OCC symbol, the premium disclosure and the LLM fallback notice all render. No uncaught JS errors, no failed requests, no console errors. 5 screenshots captured **[verified]** |
+| **Invalid input is reported** | **Verified** | A zero share count produces a visible, actionable message and leaks nothing. The earlier version of this check asserted only the absence of a leak, which a page showing *no error at all* passes — it was strengthened after it passed vacuously **[verified]** |
+| **Results cannot be read against the wrong inputs** | **Verified** | Editing any input after a run raises a stale-results banner with a re-run button; breaking the form clears the result rather than leaving real figures under a validation message. 5 browser checks **[verified]** |
+| **The journey survives the production runtime** | **Verified, with one stated limit** | See below — the runtime was reproduced from the image's own pins and booted through its own `CMD`; **the image was never built** |
+
+### The production runtime, reproduced — and what that does and does not prove
+
+Phase 5 asks for the Docker and cloud configuration to be *verified*, not
+merely inspected. No container runtime exists on this machine — `docker`,
+`podman`, `colima`, `nerdctl`, `lima` and `finch` are all absent and
+Docker.app is not installed — so the image could not be built. What was done
+instead reproduces everything about the container except its kernel isolation:
+
+| What was reproduced | How | Result |
+|---|---|---|
+| The dependency closure | A **clean venv** built from `api/requirements.txt`'s exact pins on Python **3.13.2**, the same minor as `python:3.13-slim` | Installed clean; every import the app makes resolves |
+| The filesystem the image ships | A staged tree copied under `.dockerignore`'s rules | **0** `.db` files, **no** secrets, no local venv |
+| The entrypoint | Booted with the Dockerfile's own `CMD` (uvicorn, same module path and port) | `/health` → **200** |
+| Fail-closed startup | Booted with secrets removed | `ConfigurationError: Refusing to start:` **naming all four problems**, process exits non-zero — this is the real `validate_environment()` in the lifespan handler, not a unit test of it |
+| The auth matrix | All four privileged routes, taken from `/openapi.json` rather than guessed | Missing/short/wrong secret → **503/401**; valid `Authorization: Bearer` → **200**. Four-by-four, fully correct |
+| A real analysis | `POST /portfolio/analyze` on live market data | **200, 41,688 bytes, 13.06s.** Real contract `AAPL261218P00350000`, real quotes, `premium_source: market_mid`, `iv_source: contract_iv`, budget **4,160.50 ≤ 9,747.38** (exactly the 2% requested), and the MSFT liquidity disclosure **surviving into `cons`** |
+| The cache under container ownership | `OPTIONQ_CACHE_DB` pointed at a writable directory outside the app tree | 4.5MB written to the configured path, **nothing** written into the app tree |
+
+**What this does not prove.** That the image builds; that `python:3.13-slim`'s
+system libraries satisfy every wheel (the pins installed against macOS wheels
+here, not manylinux ones); that Cloud Run's networking, memory limit and cold
+start behave. Those require a build, and a build requires a container runtime
+that is not installed. **This limit is stated rather than papered over**, and
+it is the reason deployment readiness sits at 7 and not higher.
+
+One thing noted and not acted on: `wrapt-2.6.0.dev1`, a **dev prerelease**,
+resolves transitively into the runtime closure. It installs and the app runs,
+but a prerelease in a production dependency graph is worth pinning away before
+anything is deployed.
+
+---
+
+## G. Product readiness scores
+
+| Dimension | v0 | v1 | Notes |
+|---|---|---|---|
+| Core functionality | 2 | 9 | Completes the workflow on real data; contracts are real |
+| Financial correctness | 1 | 8 | Verified arithmetic; live pricing paths proven; the no-market refusal decided and implemented; R7 root-caused and cleared. Held at 8, not raised: this cycle found the history path serving **dividend-unadjusted** prices, which flipped the sign of HYG's annual return and moved three of the five macro factors by ~4.5pp. Fixed and pinned, but it is the second time a returns-level defect has survived a full verification pass |
+| Data integrity / honesty | 1 | 9 | The strongest dimension. Provenance ledger, rejection over clamping, disclosed substitution — and disclosures that now survive the LLM layer, proven live. Held at 9, not raised: this is where the P0-class deletion defect was, and it went two cycles undetected |
+| Security | 2 | 9 | Fails closed, sanitised, scoped, constant-time, startup-validated |
+| Reliability | 3 | 8 | Timeouts both sides; degraded paths explicit; no silent fallbacks |
+| Testing | 2 | 9 | 674 tests + 21 live + 28 browser checks; every new test revert-verified, two found to pass vacuously and strengthened. Held at 9: the read-only-filesystem crash proves the suite's blind spot is *environmental*, and the new `test_cache_resilience.py` closes that one case by `chmod`-ing a real directory rather than by mocking the failure |
+| UX / product polish | 3 | 9 | Disclosure-first UI, browser-verified; stale results can no longer be read as current; −1 for out-of-hours warning density (R6) |
+| Deployment readiness | 2 | 7 | Startup and auth fail-closed behaviour **verified at runtime**; secrets verified absent from the built frontend; all 17 pins match tested versions; 12 tests assert the image config against what the code imports. Raised to 7 this cycle: the runtime was reproduced as closely as this machine allows — a clean venv built from `api/requirements.txt`'s exact pins on Python 3.13.2 (matching `python:3.13-slim`), a staged tree honouring `.dockerignore`, booted through the Dockerfile's own `CMD`. Fail-closed fired on a real boot, a full `/portfolio/analyze` returned **200 in 13.06s** on live data, and the cache wrote only to `OPTIONQ_CACHE_DB`. Not 8: **the image itself has still never been built — Docker is not installed on this machine — and nothing is deployed, by instruction** |
+| **Overall** | **2.5** | **9.0** | |
+
+---
+
+## H. Resume credibility
+
+**What can be claimed, truthfully:**
+
+> Took a quantitative hedging prototype that passed its own smoke tests and
+> failed a readiness audit at 2.5/10, and repaired it to a verified
+> end-to-end product: 35 defects across market data, options pricing, risk
+> measurement, position sizing, ranking, LLM integration and security, each
+> with a regression test confirmed to fail against the unfixed code. Built a
+> request-scoped data-provenance ledger so every figure reports whether it
+> was live, cached, substituted or unavailable, and a disclosure record the
+> explanation layer cannot overwrite — found when an LLM reply was shown to
+> delete *"premium shown is theoretical"* from live API responses. Grew the
+> suite to 674 tests including real-HTTP end-to-end integration, and verified
+> the full user journey against a live server in and out of market hours and
+> against a reproduced production runtime — which is how the last two defects
+> were found: a history path serving dividend-unadjusted prices, and a cache
+> that crashed every request on a read-only container filesystem.
+
+**The strongest thing to talk about in an interview** is not the defect count
+— it is the **classification**. Four recurring patterns explained nearly every
+defect, and naming them is what made the repair tractable rather than a
+whack-a-mole:
+
+1. **Placeholder-as-measurement** — `return 1.0` for an unmeasurable beta is
+   not a default, it is a false claim that sizes contracts.
+2. **Truncate-before-align** — windowing each series before joining compares
+   different calendar periods.
+3. **Solver-artifact IV** — a two-sided quote is the *precondition* that makes
+   an implied volatility a measurement; a $0.00001 IV produced a 1.5-million-
+   contract recommendation.
+4. **Asserted label** — a dollar VaR without its horizon is not a risk number;
+   the same figure was presented 9× too small because its consumer asserted a
+   horizon its producer never reported.
+5. **Silent substitution** — a backstop that fills in for failed data must
+   report that it ran; two history paths that disagreed about whether a
+   "price" includes dividends flipped the sign of a macro factor's annual
+   return.
+6. **Verified-here-only** — a path that behaves differently because
+   production's permissions or installed dependencies differ from the
+   developer's is not a verified path. This one was paid for twice: a
+   disclosure-deletion defect that hid behind an unset API key, and a cache
+   crash that hid behind a writable directory.
+
+The second strongest is the judgement call in ③: **rejecting an implausible
+reading is correct; clamping it to a plausible floor is not**, because a
+clamped 5% IV yields a priced, tradeable-looking recommendation built on a
+quote nobody made. That distinction is the difference between a quant who
+knows the formulas and one who knows what a number means.
+
+**What must not be claimed:**
+
+- ❌ "Production-ready" or "deployed." Nothing is deployed, by instruction, and
+  nothing is even pushed — the work sits on a local branch.
+- ❌ "Live trading" or "execution." Not implemented, deliberately.
+- ❌ "Validated against live option quotes." Every run has been out of hours
+  and every premium model-priced. This is the one claim that would be false,
+  and it is also the easiest for an interviewer to probe.
+- ❌ Any user, adoption, accuracy or performance figure. There are no users
+  and no backtest.
+
+- ❌ "Container-verified." The runtime was reproduced from the image's own
+  pins and booted through its own `CMD`, but **the image has never been
+  built** — no container runtime is installed on this machine.
+
+**The honest framing:** *a verified decision-support engine, pending
+market-hours validation of its live pricing path.* That sentence is both more
+defensible and more impressive than "production fintech platform," because it
+demonstrates knowing the difference.
+
+---
+
+## Appendix — R1, closed 2026-10-29
+
+Run between 09:30 and 16:00 ET on a trading day:
+
+```bash
+cd /Users/dipen/Projects/optionQ
+OPTIONQ_LIVE_TESTS=1 backend/.venv/bin/python -m pytest backend/tests/test_live_market_data.py -v
+```
+
+**All four pass criteria observed at 09:53–09:58 EDT on 2026-10-29:**
+
+| Criterion | Result |
+|---|---|
+| The 21 live tests run instead of skipping | **21 passed, 0 skipped** (2.6s) |
+| `premium_source` includes `market_mid` | `Counter({'market_mid': 11})` |
+| `iv_source` includes `contract_iv` | `Counter({'contract_iv': 11})`; a passing contract carried `implied_volatility=0.1863` off the chain |
+| The liquidity screens reject a wide-spread contract on live quotes | **68 of 165** SPY put strikes rejected — 67 on OI < 100, **1 on spread > 5%** |
+
+Supporting observations, all live: SPY spot 767.53; nearest-90d expiry
+2027-01-29; the 95%-moneyness put quoted **bid 10.30 / ask 10.37**, a 0.68%
+relative spread; **163 of 165** strikes two-sided; chain unavailable for 0.
+
+Two notes on the integrity of this result. First, the option chain and quote
+cache TTL is 300 seconds, so none of these figures could have been served from
+a prior session — the 24-hour cache entries are 10-byte daily-history scalars.
+Second, this did not pass on the first attempt: the market-hours gate had a
+DST bug that skipped the decisive assertion, and it had to be fixed before the
+test could run at all. §B.
+
+**Still not done:** nothing has been committed, and nothing has been deployed.
+Both require explicit instruction.
+
+---
+
+## Appendix — R2, closed 2026-10-29
+
+**The question.** Out of hours nothing is quoted, so every premium is a model
+value. Refuse to recommend, or rank the model values with the assumption
+disclosed?
+
+**Why both plain answers are wrong.** Always refusing makes the product
+useless for most of the day, for a user who is researching a hedge they intend
+to place when the market opens — the contracts are real and listed, and a
+disclosed theoretical premium is the honest and useful answer. Always ranking
+means that when the market *is* open and a particular instrument still has no
+two-sided market, the product invites the user to size a position in a
+contract nobody will fill. That is the forced recommendation the brief
+prohibits.
+
+**What the two cases have in common** is that neither can be distinguished
+from a single holding's data. They differ in what the *rest of the run* looks
+like. So the decision moved up a level, to `L4._refuse_unquotable_hedges`,
+which runs once across all recommendations:
+
+- If **no** candidate anywhere in the run has an executable two-sided quote,
+  the provider is silent. Nothing can be concluded about any single contract,
+  so every candidate keeps its disclosed theoretical premium.
+- If **some** instrument is quoting normally and a particular holding has
+  none, that holding has no market. Its candidates are withheld, it is
+  reported unhedged, and the warning says explicitly that this is an *absent*
+  market rather than a *closed* one.
+
+"Executable" means both conditions, not either: the premium came from a real
+two-sided quote (`premium_source == "market_mid"`) **and** the spread is
+inside `MAX_EXECUTABLE_SPREAD_PCT = 0.50`. A contract quoted 0.05 / 3.00 is
+quoted in the first sense, and showing its mid as the cost of a hedge is not
+honest. The predicate `is_executably_quoted` was lifted to module level in
+`selector.py` for exactly one reason: two layers now have to agree on it, and
+two copies drifting apart would mean L4 refusing hedges the selector thought
+were fine, or the reverse.
+
+**Why no market calendar.** A calendar would have to be maintained, and every
+holiday it missed would become a day of wrongly refused hedges. The run
+answers the question about itself, for free, from data it already has.
+
+**The asymmetry is deliberate.** A missed refusal leaves a disclosed
+theoretical premium on screen. A wrong refusal silently removes a hedge the
+user could have placed. The first is visible and bounded; the second is
+invisible. So the refusal fires only on positive evidence that quoting works
+right now — a wide quote does not count as the venue quoting, and neither does
+a single quoted candidate elsewhere in the same holding being absent.
+
+**Verification.** 12 tests in
+`test_selector.py::TestUnquotableHedgesAreWithheldOnlyWhenTheVenueIsQuoting`
+and `::TestExecutablyQuotedPredicate`; 4 fail against the pre-fix code. On the
+live market-hours run the gate was **armed and withheld nothing** — every
+holding had at least one executable quote, which is the correct outcome and
+the one a naive always-refuse implementation would have got wrong.
+
+---
+
+## Appendix — the disclosure-deletion defect, found 2026-10-29
+
+Recorded separately because of how it was found and what it says about the
+earlier verification, not because of its size.
+
+**What it was.** `run_l11_llm` defaults to `True`.
+`layer_11_llm_explainer._merge_explanation` wrote a model reply onto a
+candidate by replacing `cons` outright. `cons` is also where the selector
+puts the three facts the product asserts: no executable two-sided quote, thin
+market, expiry crosses earnings. A model that returned its own bullets
+therefore deleted them.
+
+**Why it matters more than it looks.** The R2 resolution above is only
+defensible because the "theoretical premiums stand" branch tells the user
+plainly what they are looking at. This defect removed the telling, in the
+default configuration, silently. A user would have seen a ranked hedge, a
+premium, a contract count and a cost — with nothing to say the premium was a
+model output rather than a price.
+
+**Why it survived two verification cycles.** No `ANTHROPIC_API_KEY` was ever
+configured on this machine, so every run — including the browser journey and
+`test_e2e_api.py` — took the deterministic-fallback branch and never executed
+the merge. The disclosures were genuinely verified, on the one code path where
+nothing could remove them. Static inspection found it only because closing R4
+meant reading L5's merge, which does the same thing, and then checking
+whether the layer that runs by default did too.
+
+**The fix.** `backend/core/disclosures.py`. `cons` remains the single list the
+UI renders; a parallel `mandatory_disclosures` records what the product itself
+said, and `restore()` runs after every merge in both layers, putting back
+anything dropped, in front of the surviving cons. Scope is the three hard
+disclosures and not every generated sentence — an explainer improving the
+basis-R² prose is doing its job.
+
+**How it was proven.** A stub HTTP server was stood up in place of an Ollama
+endpoint, so the real `OllamaExplainer`, its real JSON parser, the real L11
+engine, the real merge and the real FastAPI route were all in the path, and
+only the model's reply was ours. Against the same portfolio and the same live
+market:
+
+| | Disclosures recorded | Deleted from the response |
+|---|---|---|
+| Fix reverted | 5 | **5** |
+| Fix in place | 5 | **0** |
+
+The reverted run returned an MSFT protective put on a contract quoted 8.9%
+wide and described it to the user as *"Premium is a cost drag"* and
+*"Expires worthless if spot is flat"* — nothing else.
+
+**A second defect in the same subsystem, found alongside it.**
+`get_explainer()` returned `ClaudeExplainer` for every provider name it did
+not recognise, and recognised only `"huggingface"`. `llm_provider=ollama` sent
+the portfolio to Anthropic with nothing in the logs to say so — and
+`OllamaExplainer` could not be constructed in any case, because the two
+settings it reads were never declared. `"ollama"` is now wired, the settings
+declared, and an unknown provider name logged at ERROR naming what was
+ignored and who answered instead.
+
+---
+
+## Appendix — R7, closed 2026-10-29
+
+R7 was the last open P1 and the one the previous cycle declined to close,
+recording it as *"unresolved rather than explained away."* That was the right
+call on the evidence then available: the pipeline had been cleared, the data
+could not be, and there was no ground truth for the window in question. This
+appendix records what actually settled it.
+
+### The finding, restated
+
+Over the trailing 252 sessions:
+
+| Pair | R² | ρ | Verdict |
+|---|---|---|---|
+| AAPL / SPY | 0.083 | 0.288 | implausibly weak for a mega-cap |
+| MSFT / SPY | 0.154 | 0.392 | implausibly weak |
+| median \|ρ\| across AAPL/MSFT/NVDA/JPM/XOM | — | **0.11** | implausibly weak |
+| VOO / SPY | 0.996 | — | coherent |
+| IVV / SPY | 0.995 | — | coherent |
+| QQQ / SPY | 0.847 | — | coherent (β=1.45) |
+
+The pattern is what made it suspicious: the pairs that *must* be correlated by
+construction were, and the pairs that *should* be correlated economically
+were not.
+
+### Test 1 — is the pipeline distorting the series?
+
+The product's returns were recomputed independently, straight from the raw
+Yahoo chart JSON, bypassing every layer of the data stack. The two series are
+**byte-identical**:
+
+```
+AAPL  maxdiff = 0.00e+00
+SPY   maxdiff = 0.00e+00
+```
+
+Combined with the checks the previous cycle already ran — cross-correlation
+peaking exactly at lag 0, 501 observations over identical dates on both legs,
+SPY-on-SPY returning β=1.000 / R²=1.0, no duplicate dates, no close outside
+`[Low, High]`, plausible marginal vols (AAPL 28.6% annualised) — **no stage of
+the product is at fault.** The regression computes the right answer from the
+data it is handed, and the data it is handed is what the provider sent.
+
+### Test 2 — is the window the whole story?
+
+Yes. The same two series over 500 sessions instead of 252:
+
+| Pair | 252d R² | 500d R² | 252d ρ | 500d ρ | 500d β |
+|---|---|---|---|---|---|
+| AAPL / SPY | 0.083 | **0.354** | +0.288 | **+0.595** | **1.03** |
+| XOM / SPY | — | — | **+0.115** | **−0.329** | — |
+| VOO / SPY | 0.994 | 0.996 | — | — | — |
+
+A β of 1.03 for AAPL against SPY over two years is exactly what theory
+expects. The index-replication pair barely moves between windows, because it
+cannot — it is the same basket. The single stocks move enormously, and XOM
+**changes sign**.
+
+That is the signature of a genuinely dispersed period, not of corrupt data: a
+window in which single names decoupled from the index while the index's own
+trackers stayed glued to it. `LOOKBACK_DAYS = 252` is the window the product
+actually fits on, so 0.083 is what it correctly reports.
+
+**Discovered while doing this:** `covariance.py`'s docstring still described
+the estimate as *"signed, 60-day rolling"*. Anyone auditing whether R²=0.08
+was plausible would have been reasoning about a window roughly four times
+noisier than the one in use. Logged as a ④ asserted-label defect and fixed.
+
+### What the product does with it, which is the part that matters
+
+It refuses. SPY is **rejected** as an AAPL cross hedge because
+R² = 0.084 < `MIN_CROSS_R2 = 0.30`, and the user is shown
+*"beta fitted on 252 sessions, R² 0.08"* rather than a hedge sized against a
+beta the system does not believe. The weak reading is surfaced, acted on, and
+not sold.
+
+This is the behaviour the ③ judgement call was written for — *rejecting an
+implausible reading is correct; clamping it to a plausible floor is not* —
+arriving at the right outcome from the opposite direction: here the reading
+was not implausible at all, and the gate still did the right thing with it.
+
+### Status
+
+**Closed. Not a defect.** The alarm was correct to raise it, the previous
+cycle was correct not to hand-wave it, and the answer is that a 252-day
+AAPL/SPY ρ of 0.29 is what that year was.

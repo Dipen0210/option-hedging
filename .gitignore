@@ -63,3 +63,21 @@ backend/hedgeos_cache.db
 # Next.js build output
 frontend/.next/
 frontend/node_modules/
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+
+# SQLite cache — the path is resolved at runtime (OPTIONQ_CACHE_DB), so match
+# the files rather than one location. These were being shipped in the Docker
+# image until .dockerignore caught them; see REPAIR_REPORT.md §B⑥(b).
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+
+# Per-machine training timestamps. They describe local *.pkl artifacts, which
+# are themselves ignored above, so tracking them only produces diff noise.
+backend/ml_models/*_trained_at.txt
