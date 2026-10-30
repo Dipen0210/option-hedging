@@ -1,0 +1,152 @@
+# OptionQ CI.
+#
+# The point of the `image` job is narrow and was learned expensively: the
+# container image had never been built, five test assertions claimed
+# .dockerignore excluded backend/.env, all five passed, and the image shipped
+# five live API keys in a layer. Only a real build could see it. See
+# REPAIR_REPORT.md §F.
+#
+# So the build runs here, on every push, where it does not depend on anyone
+# remembering to install a container engine. GitHub runners are x86-64, which
+# is also Cloud Run's architecture, so unlike a build on an arm64 laptop this
+# one needs no emulation.
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      live_market_data:
+        description: >-
+          Also run the tests and the container analysis that hit real market-data
+          providers. Off by default because Yahoo blocks many datacentre IP
+          ranges, and a provider refusing a runner is not a defect in OptionQ.
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Backend suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'   # must match the Dockerfile's base image
+          cache: pip
+          cache-dependency-path: |
+            api/requirements.txt
+            backend/requirements.txt
+
+      - name: Install
+        run: python -m pip install --upgrade pip && pip install -r backend/requirements.txt
+
+      - name: Confirm the runtime pins resolved to what is pinned
+        # The container once ran a different numerical stack from the one the
+        # suite exercised, and a transitive prerelease (wrapt 2.6.0.dev1)
+        # resolved into the pricing dependency graph. `pip check` plus an
+        # explicit prerelease sweep is cheap insurance against both.
+        run: |
+          pip check
+          if pip list --format=freeze | grep -iE '==.*(dev|rc|a[0-9]+|b[0-9]+)$'; then
+            echo "::error::a prerelease resolved into the dependency closure" && exit 1
+          fi
+          echo "no prereleases in the closure"
+
+      - name: Suite
+        # No OPTIONQ_LIVE_TESTS, so the provider-backed tests skip rather than
+        # making the result depend on a third party's uptime.
+        run: pytest backend/tests -q --junitxml=junit.xml
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: Live provider tests
+        if: github.event_name == 'workflow_dispatch' && inputs.live_market_data
+        run: pytest backend/tests -q -m live -rs
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          OPTIONQ_LIVE_TESTS: '1'
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit
+          path: junit.xml
+
+  image:
+    name: Container image (built and run)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build and verify
+        # --build makes the Dockerfile's secret-leak guard part of this step: a
+        # leak is a failed build, not a published image. The script then runs
+        # the image and checks what is actually in it, that every import
+        # resolves, that it refuses to start on three bad configurations, that
+        # /health serves, and the full two-credential auth matrix.
+        run: scripts/verify_image.sh --build
+        env:
+          ENGINE: docker
+          IMAGE: optionq-api:ci
+
+      - name: Real analysis through the container
+        # Opt-in: needs a provider that will answer a datacentre IP.
+        if: github.event_name == 'workflow_dispatch' && inputs.live_market_data
+        run: scripts/verify_image.sh --live
+        env:
+          ENGINE: docker
+          IMAGE: optionq-api:ci
+
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+        working-directory: frontend
+
+      - name: No secret-shaped variable can reach the client bundle
+        # Next.js inlines every NEXT_PUBLIC_* value into the shipped JavaScript.
+        # That makes the naming convention the actual security boundary, so it
+        # is checked rather than trusted.
+        run: |
+          if grep -rnE 'NEXT_PUBLIC_[A-Z0-9_]*(KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL)' \
+               --include='*.ts' --include='*.tsx' --include='*.js' --include='*.mjs' . ; then
+            echo "::error::a secret-named NEXT_PUBLIC_ variable would be inlined into the client bundle" && exit 1
+          fi
+          echo "no secret-named NEXT_PUBLIC_ variables"
+        working-directory: frontend
+
+      - run: npm run build
+        working-directory: frontend
+        env:
+          NEXT_PUBLIC_API_URL: https://optionq-ci.example.com
+
+      - name: No secrets in the built output
+        run: |
+          out=out; [ -d "$out" ] || out=.next
+          echo "scanning $out"
+          if grep -rlE 'sk-ant-[A-Za-z0-9_-]{20}|hf_[A-Za-z0-9]{30}|AIza[A-Za-z0-9_-]{30}|AKIA[A-Z0-9]{16}' "$out"; then
+            echo "::error::a credential-shaped string is present in the built frontend" && exit 1
+          fi
+          echo "no credential-shaped strings in the built frontend"
+        working-directory: frontend
