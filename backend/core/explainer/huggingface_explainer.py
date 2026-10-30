@@ -25,7 +25,11 @@ from backend.core.explainer.base_explainer import (
     raise_if_provider_refused,
 )
 from backend.core.explainer.prompt_builder import CANDIDATES_SYSTEM, COMBINED_SYSTEM, PORTFOLIO_SYSTEM
-from backend.core.explainer.claude_explainer import _extract_json
+from backend.core.explainer.response_parsers import (
+    parse_candidates,
+    parse_combined,
+    parse_portfolio,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -153,98 +157,21 @@ class HuggingFaceExplainer(BaseLLMExplainer):
             return CombinedExplanation()
 
     # ── Parsers ───────────────────────────────────────────────────────────────
+    #
+    # Delegated. Every provider is asked for the same JSON shape by the same
+    # system prompts, so the parsing belongs to the prompt contract rather than
+    # to a provider; keeping a copy per provider is how two of them end up
+    # disagreeing about the same response. These remain methods because the
+    # class's own call sites and tests use them.
 
-    def _parse_candidates(
-        self,
-        raw: str,
-        context: Dict[str, Any],
-    ) -> List[CandidateExplanation]:
-        try:
-            data = json.loads(_extract_json(raw))
-            if not isinstance(data, list):
-                data = [data]
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.warning(f"HuggingFace candidates JSON parse failed: {e}\nRaw: {raw[:300]}")
-            return []
+    def _parse_candidates(self, raw, context):
+        return parse_candidates(raw, context, "HuggingFace")
 
-        asset_ticker = context.get("holding", {}).get("ticker", "")
-        results = []
-        for item in data:
-            if not isinstance(item, dict):
-                continue
-            results.append(CandidateExplanation(
-                ticker=item.get("ticker", ""),
-                strategy=item.get("strategy", ""),
-                asset_ticker=asset_ticker,
-                when_works_best=item.get("when_works_best", ""),
-                when_fails=item.get("when_fails", ""),
-                rationale=item.get("rationale", ""),
-                pros=item.get("pros", []),
-                cons=item.get("cons", []),
-            ))
-        return results
+    def _parse_portfolio(self, raw):
+        return parse_portfolio(raw, "HuggingFace")
 
-    def _parse_portfolio(self, raw: str) -> PortfolioExplanation:  # noqa: E303
-        try:
-            data = json.loads(_extract_json(raw))
-            if not isinstance(data, dict):
-                return PortfolioExplanation()
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.warning(f"HuggingFace portfolio JSON parse failed: {e}")
-            return PortfolioExplanation()
-
-        return PortfolioExplanation(
-            summary=data.get("summary", ""),
-            key_risks=data.get("key_risks", []),
-            regime_commentary=data.get("regime_commentary", ""),
-            top_recommendation=data.get("top_recommendation", ""),
-        )
-
-
-    def _parse_combined(self, raw: str, context: Dict[str, Any]) -> CombinedExplanation:
-        try:
-            data = json.loads(_extract_json(raw))
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.warning(f"HuggingFace combined JSON parse failed: {e}\nRaw: {raw[:300]}")
-            return CombinedExplanation()
-
-        result = CombinedExplanation()
-
-        # ── Candidate explanations keyed by asset_ticker → strategy ──────────
-        positions_data = data.get("positions", {})
-        if not isinstance(positions_data, dict):
-            logger.warning("HuggingFace combined: 'positions' is not a dict")
-            return result
-
-        for asset_ticker, strategies in positions_data.items():
-            if not isinstance(strategies, dict):
-                continue
-            result.candidates[asset_ticker] = {}
-            for strategy, fields in strategies.items():
-                if not isinstance(fields, dict):
-                    continue
-                result.candidates[asset_ticker][strategy] = CandidateExplanation(
-                    ticker="",          # filled by caller from candidate data
-                    strategy=strategy,
-                    asset_ticker=asset_ticker,
-                    when_works_best=fields.get("when_works_best", ""),
-                    when_fails=fields.get("when_fails", ""),
-                    rationale=fields.get("rationale", ""),
-                    pros=fields.get("pros", []),
-                    cons=fields.get("cons", []),
-                )
-
-        # ── Portfolio narrative ───────────────────────────────────────────────
-        port = data.get("portfolio", {})
-        if isinstance(port, dict):
-            result.portfolio = PortfolioExplanation(
-                summary=port.get("summary", ""),
-                key_risks=port.get("key_risks", []),
-                regime_commentary=port.get("regime_commentary", ""),
-                top_recommendation=port.get("top_recommendation", ""),
-            )
-
-        return result
+    def _parse_combined(self, raw, context):
+        return parse_combined(raw, context, "HuggingFace")
 
 
 def _is_rate_limit(exc: Exception) -> bool:
