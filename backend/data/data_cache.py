@@ -53,10 +53,6 @@ def _candidate_db_paths():
     override = os.environ.get("OPTIONQ_CACHE_DB")
     if override:
         yield override
-    if os.environ.get("VERCEL"):
-        # The Vercel bundle filesystem is read-only; /tmp is not.
-        yield "/tmp/hedgeos_cache.db"
-        return
     yield _DEFAULT_DB_PATH
     yield os.path.join(tempfile.gettempdir(), "hedgeos_cache.db")
 

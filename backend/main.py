@@ -18,7 +18,6 @@ Routes:
 """
 
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
@@ -44,14 +43,17 @@ async def lifespan(app: FastAPI):
     # themselves and nothing is left exposed.
     validate_environment()
 
-    scheduler = None
-    # APScheduler requires a persistent process — skip on Vercel serverless.
-    # Retraining is handled by Vercel Cron calling /admin/cron/retrain-*.
-    if not os.environ.get("VERCEL"):
-        from backend.ml.regime.scheduler import build_scheduler
-        scheduler = build_scheduler()
-        scheduler.start()
-        logger.info("APScheduler started — fast(24h) + main(monthly) retrains scheduled.")
+    # The scheduler runs in-process. It needs a persistent process, which is
+    # why the backend is a container rather than a serverless function: this
+    # branch used to be skipped under Vercel, where APScheduler cannot run at
+    # all, and retraining depended on an external cron hitting
+    # /admin/cron/retrain-*. Those routes still exist and are still the right
+    # trigger if the service is configured to scale to zero — a container that
+    # is not running cannot fire a 24-hour timer.
+    from backend.ml.regime.scheduler import build_scheduler
+    scheduler = build_scheduler()
+    scheduler.start()
+    logger.info("APScheduler started — fast(24h) + main(monthly) retrains scheduled.")
 
     yield  # server is running
 

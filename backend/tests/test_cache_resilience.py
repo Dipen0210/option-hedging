@@ -59,7 +59,6 @@ def cache_at(monkeypatch, tmp_path):
     def _set(preferred, fallback_dir=None):
         monkeypatch.setattr(dc, "_DEFAULT_DB_PATH", str(preferred))
         monkeypatch.delenv("OPTIONQ_CACHE_DB", raising=False)
-        monkeypatch.delenv("VERCEL", raising=False)
         monkeypatch.setenv("TMPDIR", str(fallback_dir or (tmp_path / "fallback")))
         os.makedirs(str(fallback_dir or (tmp_path / "fallback")), exist_ok=True)
         dc.reset_resolution()

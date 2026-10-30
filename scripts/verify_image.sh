@@ -244,19 +244,39 @@ echo "################ 5. auth matrix ################"
 status_noauth() { curl -s -o /dev/null -w '%{http_code}' -X "$1" "http://localhost:${PORT}$2"; }
 status_auth()   { curl -s -o /dev/null -w '%{http_code}' -X "$1" -H "Authorization: Bearer $3" "http://localhost:${PORT}$2"; }
 
+# A 405 means the path exists but not with that method, so the cell never
+# reached the auth dependency and proves nothing about authorization. It is
+# called out separately from a wrong status code because the defect is in this
+# script, not in the app: an expectation written against a method the app does
+# not serve is a check that cannot fail for the reason it claims to test.
 expect() {
   local label="$1" want="$2" got="$3"
-  if [ "$got" = "$want" ]; then ok "$label → $got"; else no "$label → $got (expected $want)"; fi
+  if [ "$got" = "405" ] && [ "$want" != "405" ]; then
+    no "$label → 405: no such method on this route; the check never reached auth"
+  elif [ "$got" = "$want" ]; then
+    ok "$label → $got"
+  else
+    no "$label → $got (expected $want)"
+  fi
 }
 
 expect "GET /admin/training/status  no header"   401 "$(status_noauth GET /admin/training/status)"
 expect "GET /admin/training/status  wrong token" 401 "$(status_auth GET /admin/training/status wrong-token-entirely)"
 expect "GET /admin/training/status  ADMIN key"   200 "$(status_auth GET /admin/training/status "$GOOD_ADMIN")"
 expect "GET /admin/training/status  CRON secret" 401 "$(status_auth GET /admin/training/status "$GOOD_CRON")"
-expect "POST /admin/cron/retrain-fast  no header"   401 "$(status_noauth POST /admin/cron/retrain-fast)"
-expect "POST /admin/cron/retrain-fast  wrong token" 401 "$(status_auth POST /admin/cron/retrain-fast wrong-token-entirely)"
-expect "POST /admin/cron/retrain-fast  ADMIN key"   401 "$(status_auth POST /admin/cron/retrain-fast "$GOOD_ADMIN")"
-expect "POST /admin/cron/retrain-fast  CRON secret" 200 "$(status_auth POST /admin/cron/retrain-fast "$GOOD_CRON")"
+expect "GET /admin/cron/retrain-fast  no header"   401 "$(status_noauth GET /admin/cron/retrain-fast)"
+expect "GET /admin/cron/retrain-fast  wrong token" 401 "$(status_auth GET /admin/cron/retrain-fast wrong-token-entirely)"
+expect "GET /admin/cron/retrain-fast  ADMIN key"   401 "$(status_auth GET /admin/cron/retrain-fast "$GOOD_ADMIN")"
+# The positive cell is deliberately behind --live. A 200 here is not a cheap
+# assertion: the handler runs a real fast retrain, which fetches market data and
+# fits a model. Asserting 200 without outbound data access would either fail for
+# a reason that is not an authorization defect, or have to accept a 5xx — and a
+# cell that accepts an error is not evidence that the credential works.
+if [ "$DO_LIVE" = 1 ]; then
+  expect "GET /admin/cron/retrain-fast  CRON secret" 200 "$(status_auth GET /admin/cron/retrain-fast "$GOOD_CRON")"
+else
+  echo "SKIP  GET /admin/cron/retrain-fast  CRON secret → 200 (needs --live: the handler retrains)"
+fi
 
 body=$(curl -s "http://localhost:${PORT}/admin/training/status")
 echo "--- unauthorized body: $body"
