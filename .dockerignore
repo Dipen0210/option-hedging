@@ -2,38 +2,50 @@
 # an image layer is not a secret store: it can be pulled, exported and
 # inspected by anyone with registry access, and deleting a file in a later
 # layer does not remove it from the earlier one.
+#
+# EVERY PATTERN MEANT TO MATCH INSIDE A SUBDIRECTORY MUST BE `**/`-ANCHORED.
+# This file is not .gitignore. Git re-applies a bare pattern at every
+# directory level; Docker and Buildah match each pattern once against the
+# whole path relative to the context root, so a bare `.env` excludes `./.env`
+# and nothing else. The first version of this file used bare patterns and was
+# asserted to work by a test that only checked the strings were present. The
+# image built from it contained backend/.env (five live API keys), the 417MB
+# host virtualenv and a 6.4MB SQLite cache. `backend/tests/` was the only rule
+# that worked, because it names its path. Verified against real builds:
+# `.env` leaves `sub/.env` in the image, `**/.env` removes it.
 
-# Secrets. backend/.env holds every API key; it was previously copied into the
-# published image.
+# Secrets. backend/.env holds every API key.
 .env
 .env.*
-!.env.example
-*.pem
-*.key
+**/.env
+**/.env.*
+!**/.env.example
+**/*.pem
+**/*.key
 
-# The local virtualenv — 412MB of host-specific binaries that would shadow the
-# versions `pip install -r requirements.txt` just resolved.
-.venv/
-venv/
-env/
+# Local virtualenvs — host-specific binaries that bloat the image and shadow
+# the versions `pip install -r requirements.txt` just resolved.
+**/.venv/
+**/venv/
+**/env/
 
 # Caches and build output
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.coverage
+**/htmlcov/
 
 # Not needed at runtime
-.git/
+**/.git/
 .github/
 .gitignore
 frontend/
-node_modules/
-.next/
-*.md
+**/node_modules/
+**/.next/
+**/*.md
 !backend/**/*.md
 
 # Tests do not run in the production image; they are run in CI against
@@ -41,8 +53,8 @@ node_modules/
 backend/tests/
 
 # Scratch / local data
-*.log
-.DS_Store
+**/*.log
+**/.DS_Store
 
 # The developer's SQLite response cache. Shipping it put 6.4MB of local query
 # history in a published image layer, and because the image copies this tree as
@@ -50,8 +62,8 @@ backend/tests/
 # writable — so a cache hit returned data and a cache miss raised
 # OperationalError. The cache is runtime state; it is created at the writable
 # path resolved in backend/data/data_cache.py, never built into the image.
-*.db
-*.sqlite
-*.sqlite3
-*.db-journal
-*.db-wal
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.db-journal
+**/*.db-wal

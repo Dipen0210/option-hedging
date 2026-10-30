@@ -51,3 +51,14 @@ apscheduler==3.11.2
 
 # Config
 python-dotenv==1.2.2
+
+# ── Transitive pins ──────────────────────────────────────────────────────────
+# wrapt is not imported by backend/; it arrives via arch → statsmodels →
+# formulaic. Pinned because formulaic declares `wrapt>=1.17.0rc1` for Python
+# >= 3.13, and a specifier that names a prerelease makes pip willing to resolve
+# prereleases for that requirement — so the closure picked up wrapt 2.6.0.dev1,
+# a development build, in preference to the 2.5.2 stable release. A dev
+# prerelease has no release guarantees and can change behaviour between
+# identical-looking builds; it does not belong in the dependency graph of
+# something that prices hedges. 2.5.2 satisfies formulaic's constraint.
+wrapt==2.5.2

@@ -1,9 +1,9 @@
 # OptionQ — Final Independent Re-Audit (Phase 8)
 
-**Date:** 2026-10-29 · **Branch:** `main` (uncommitted working tree)
+**Date:** 2026-10-29 · **Branch:** `repair/end-to-end-phase-2` (local only — nothing pushed, nothing deployed)
 **Scope:** re-audit of the v1 repair against the original readiness audit
 (verdict 2.5 / 10, all four readiness questions "No")
-**Method:** static inspection, 674 automated tests, and live end-to-end runs
+**Method:** static inspection, 678 automated tests, and live end-to-end runs
 against a real `uvicorn` server — 05:50 ET (pre-market), 09:58 EDT (market
 open), and a third with an LLM provider wired in (§B ⑤)
 
@@ -23,13 +23,46 @@ live two-sided market. It is ready for external user testing.**
 **Two distinct bars, and only the first is claimed.** *Ready for external user
 testing* means the workflow completes on live data, the numbers are defensible
 and provenanced, the failure paths are honest, and the deployment
-configuration fails closed — all of which is now measured, including on a
-reproduced production runtime (§F). *Ready for unsupervised public use* is a
-higher bar and is **not** claimed: it would require the image actually built
-and run, a monitored deployment, and market-hours observation over more than a
-single session. Nothing in this report should be read as the second claim.
+configuration fails closed — all of which is now measured, and now measured
+**in the container itself**, built for `linux/amd64` and run (§F). *Ready for
+unsupervised public use* is a higher bar and is **not** claimed: it would
+require a monitored deployment on Cloud Run, the LLM path exercised in the
+container, and market-hours observation over more than a single session.
+Nothing in this report should be read as the second claim.
 
 ### What changed this cycle
+
+**The container was built and run, and that is how the worst defect of the
+whole repair was found.** The previous pass of this report concluded that no
+container runtime was available here, reproduced the runtime as faithfully as a
+developer machine allows, and stated the gap honestly. **The conclusion was
+wrong:** nothing was installed, but Homebrew and hardware virtualization both
+were, so a runtime was a `brew install` away. Podman installed, image built for
+`linux/amd64` — and the running container held **`backend/.env`, with five live
+API keys, in an image layer**, alongside a 417MB host virtualenv and the cache
+database that the defect register already marked closed.
+
+One root cause: `.dockerignore` is not `.gitignore`. Docker matches each
+pattern once against the whole path relative to the context root, so `.env`
+excluded `./.env` and nothing else, and **every rule in that file aimed at
+something inside `backend/` matched nothing**. `backend/tests/` was the only
+rule that worked, because it names its path — which is exactly why the leak
+looked like a solved problem. Five assertions across two test files covered
+this. All five passed, because all five checked that the rule was *written*.
+
+Fixed three ways, not one: the patterns anchored, a **build-time guard** that
+fails the build on any leaked secret or database, and the five string
+assertions replaced by tests that evaluate the rules against the paths that
+actually leaked. Image rebuilt at **668MB** and re-verified **11/11**, then run
+end to end: fail-closed on three bad configurations, the full auth matrix
+including both cells where a *valid* credential must be refused, and a real
+`POST /portfolio/analyze` at 200 in 31.2s on live data, 0.854% of notional
+against a 2% cap, cache confined to its own directory, zero tracebacks. §F.
+
+The lesson is not that the fix was hard; it was ten minutes. It is that **a
+cycle of this report asserted the configuration was correct, a suite of 674
+tests agreed, and five live API keys were sitting in an image layer the whole
+time.** Only building it could see that.
 
 **R7 is closed, and it was not a defect.** The last open P1 — an implausibly
 weak single-stock correlation structure — was root-caused rather than argued
@@ -42,8 +75,8 @@ index was genuinely extreme over the trailing year. The product measures it
 correctly **and refuses the hedge** — SPY is rejected as an AAPL cross hedge
 at R²=0.084 against a 0.30 floor. Full detail in §C.
 
-**Two new defects were found in its place, and they are the more important
-finding.** Reproducing the production runtime exposed a **P0 that could only
+**Two further defects were found alongside it.** Reproducing the production
+runtime exposed a **P0 that could only
 ever have fired in production**: the cache opened SQLite inside the
 root-owned application tree and let every error propagate, so on a read-only
 container filesystem every analysis request died *after* its market-data
@@ -86,18 +119,23 @@ a missing quote is not a defect. It now uses `ZoneInfo("America/New_York")`.
 
 | Question | v0 | v1 | Basis |
 |---|---|---|---|
-| Does the application complete its advertised workflow? | **No** | **Yes** | 674 tests, 21/21 live, 28/28 browser-driven UI checks, and a full `/portfolio/analyze` run on a reproduced production runtime **[verified]** |
+| Does the application complete its advertised workflow? | **No** | **Yes** | 678 tests, 21/21 live, 28/28 browser-driven UI checks, and a full `/portfolio/analyze` run **inside the built container** **[verified]** |
 | Are the financial calculations defensible? | **No** | **Yes** | §E. The one open design question (R2) is now decided and implemented |
 | Is it secure enough to expose? | **No** | **Yes** | 9 security test classes, 4/4 endpoints fail closed, 422 bodies sanitised **[tested] [verified]** |
 | Would a real investor get usable, honest output? | **No** | **Yes, in hours and out** | §A above, §F. R7, the one open data-confidence question, is now resolved — the weak single-stock betas are a correct measurement of a genuinely dispersed window, not bad data |
 
 ### Score: **9.0 / 10** (from 2.5)
 
-The 1.0 withheld, re-apportioned this cycle because R7 closed and two new
-defects opened: **the container image has still never been built** — no
-container runtime is installed on this machine — and nothing is deployed
-(−0.5); and two defects reached this cycle undetected, one of them a P0 that
-could only ever have fired in production (−0.5). R7 clearing does not raise the
+The 1.0 withheld, re-apportioned again this cycle. The image has now been
+built and run, which closes the gap the previous apportionment named — but
+building it **found a P0 that every green test in this suite coexisted with**:
+five live API keys in an image layer, because `.dockerignore`'s rules matched
+nothing inside `backend/`, and because five assertions across two test files
+checked that those rules were *written* rather than what they *did* (−0.5 for
+a P0 that reached this cycle undetected, and for the deployment-facing
+assertions that were vacuous). The remaining −0.5: Cloud Run itself is
+untested, the LLM path was not exercised in the container, nothing is
+deployed, and the container ran under emulation. R7 clearing does not raise the
 score, because what replaced it is worse: a crash that every test on this
 machine was structurally incapable of seeing.
 
@@ -204,7 +242,7 @@ ranks the executable price; `_apply_net_market_quote` preserves credit.
 
 **Pinned by:** `test_iv_plausibility.py` (6 classes), `test_selector.py` (12 classes)
 
-### ④ Asserted label — 6 defects
+### ④ Asserted label — 7 defects
 
 The class: a figure's units or horizon asserted by its consumer rather than
 reported by its producer. L3 scales VaR to the user's hedge horizon, but the
@@ -247,6 +285,34 @@ as a label that asserts a horizon the figure does not have; the fix states the
 real window and says that it changed.
 
 **File:** `backend/data/covariance.py`
+
+**Seventh instance, and the one this cycle paid most for — it was in the test
+suite.** Five assertions across `test_security.py` and
+`test_deployment_contract.py` protected the container against shipping secrets:
+
+```python
+assert ".env" in patterns
+assert ".venv/" in patterns
+assert "*.pem" in patterns and "*.key" in patterns
+```
+
+All five passed. The first real build of the image contained `backend/.env`
+with five live API keys, because a bare `.dockerignore` pattern matches only at
+the build-context root. The assertions checked that the rule was *written*; the
+comments above them described what it *did*; nothing connected the two. **A
+test that checks configuration exists, rather than what the configuration does,
+is an asserted label wearing a test's clothes** — and it is worse than no test,
+because it also supplies the confidence.
+
+The fix was not to add a stronger string check. `backend/tests/fixtures/dockerignore.py`
+now *evaluates* the file — Docker's glob semantics, `**/` spanning zero or more
+components, last-match-wins, `!` negation — against the paths that actually
+leaked, and the semantics were calibrated against two throwaway builds rather
+than recalled. Both test files import the one implementation. Full account and
+the build-time guard in §F, registered as defect 37.
+
+**Files:** `.dockerignore`, `Dockerfile`, `backend/tests/fixtures/dockerignore.py`,
+`backend/tests/test_security.py`, `backend/tests/test_deployment_contract.py`
 
 ### ⑤ Silent substitution — 6 defects
 
@@ -398,15 +464,32 @@ Before touching anything, real Yahoo was checked: it returns `adjclose` for
 harness was asserting a defect into existence. It now emits `adjclose == close`
 — factor exactly 1.0 — and the assertion stands untouched.
 
-### ⑥ Verified-here-only — 2 defects, one of them P0
+### ⑥ Verified-here-only — 3 defects, two of them P0
 
-**The class, named this cycle:** *a code path that behaves differently because
+**The class, named last cycle:** *a code path that behaves differently because
 production's filesystem, permissions or installed dependencies differ from the
-developer's is not a verified path, however green the suite is.* This is the
-second time the lesson has been paid for — the ⑤ disclosure-deletion defect
-survived two cycles because no `ANTHROPIC_API_KEY` was set here, so the merge
-code never ran. The two below survived because a developer's directory is
+developer's is not a verified path, however green the suite is.* The lesson has
+now been paid for three times. The ⑤ disclosure-deletion defect survived two
+cycles because no `ANTHROPIC_API_KEY` was set here, so the merge code never
+ran. The cache defects below survived because a developer's directory is
 writable and a container's is not.
+
+**The third payment is the one worth studying, because the missing condition
+was the build itself.** Last cycle this report recorded that no container
+runtime existed on this machine, reproduced the runtime in a clean venv and a
+hand-staged file tree, and stated the gap honestly. The reproduction was
+faithful in every respect but one: the staged tree was assembled by applying
+`.dockerignore`'s rules *as I read them*, and Docker applies them differently.
+Building the image for real produced `backend/.env` with five live API keys in
+a layer — **a second P0 in this class** — plus a 417MB host virtualenv and the
+cache database that defect 35's row already called closed. Full account in §F,
+registered as defect 37.
+
+Reproducing an environment you have reasoned about is not the same as running
+it, and the difference is exactly where this class lives. It is also why
+"no runtime is installed" was the wrong conclusion rather than an honest limit:
+nothing was *installed*, but Homebrew and hardware virtualization were both
+available, so the verification was a `brew install` away the whole time.
 
 #### (a) The cache crashed the request on a read-only filesystem — **P0, production-only**
 
@@ -463,10 +546,20 @@ by `COPY . .`. Worse than dead weight: the file arrived **readable but not
 writable**, so cache *reads* returned a developer's months-old prices while
 *writes* failed — the exact combination that makes a failure look
 intermittent. `.dockerignore` now excludes `*.db`, `*.sqlite*` and SQLite's
-journal and WAL sidecars. Verified on the staged tree: **0** `.db` files, and
-no secrets.
+journal and WAL sidecars.
 
-### Security — 8 defects
+**This subsection was wrong for a full cycle, and it is worth leaving the
+correction visible.** It used to end *"Verified on the staged tree: 0 `.db`
+files, and no secrets."* The staged tree was built by applying
+`.dockerignore`'s rules the way I read them. Docker applies them differently —
+a bare pattern matches only at the context root — so the first real build of
+the image contained this database, root-owned, exactly as described above, plus
+`backend/.env` and the 417MB host virtualenv. See defect 37 in §F. Now verified
+against the built image rather than a tree I staged myself: **0** `.db` files,
+no secrets, no virtualenv, and a build-time guard that fails the build if that
+ever changes.
+
+### Security — 9 defects
 
 | Defect | Resolution |
 |---|---|
@@ -478,6 +571,7 @@ no secrets.
 | No startup configuration validation | Validated at boot; missing secrets logged as refusals |
 | CORS unreviewed | Origin from `FRONTEND_URL` |
 | Dependency incompatibilities, Docker/cloud config | `requirements.txt`, `Dockerfile`, `.dockerignore`, `backend/.env.example` |
+| **`backend/.env` — `ANTHROPIC_API_KEY`, `HF_API_TOKEN`, `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `FRED_API_KEY` — was present in the built image**, 713 bytes at `/app/backend/.env`, in a layer that stays readable to anyone who can pull it. `.dockerignore` carried a `.env` rule the whole time; a bare pattern matches only at the build-context root, so it excluded `./.env` and nothing else. Five test assertions covered this and all five passed by checking the rule's text (defect 37) | Every nested rule `**/`-anchored; a **build-time guard** that fails the build on any `.env`/`*.pem`/`*.key`/`*.db`/`.venv`/`tests` in the copied tree; the five string assertions replaced by tests that evaluate the rules. Verified absent from the rebuilt image, which also dropped 1.08GB → 668MB |
 
 **Files:** `backend/api/security.py` (new), `backend/api/routes_monitor.py`,
 `backend/api/routes_portfolio.py`, `backend/api/routes_hedge.py`,
@@ -573,7 +667,7 @@ nothing is pushed and nothing is deployed. See R5 in §C.
 | ~~R2~~ | ~~The no-valid-quote question is unresolved.~~ **CLOSED.** Decided and implemented: the refusal is conditional on the venue demonstrably quoting. `L4._refuse_unquotable_hedges` withholds a holding's candidates only when *some other* instrument in the same run carries an executable two-sided quote; if nothing is quoted anywhere, the provider is silent and disclosed theoretical premiums stand. 12 tests, 4 revert-verified; armed and correct on a live market-hours run. | — | See the appendix. The decision turned on asymmetric cost, not on preference. |
 | ~~R3~~ | ~~Risk-estimate provenance computed but not exposed.~~ **CLOSED.** `RiskEstimateProvenance` now travels on every `HedgeRecommendation`, and `basis_risk_source` / `_n_obs` / `_window_days` / `_stderr` on every `InstrumentCandidate`; `corr_stderr` finally has a consumer. Rendered and verified in the browser. | — | Resolved by extending `HedgeOutput` rather than adding a sibling endpoint: a sibling lets a client render a beta without ever fetching its standard error. |
 | ~~R4~~ | ~~Layer 5 (preliminary LLM pass) lightly exercised.~~ **CLOSED.** It is off by default (`run_l5_prelim_llm = False`), so it was untested-by-default code rather than a defect. Its `explain()` docstring claimed *"Never raises — all LLM failures are caught and logged"* while the method has no `try/except`; the docstring is corrected to say what is actually true — the orchestrator's guard is what makes a failure non-fatal — and that guard is now pinned by a test that raises from L5 and asserts the run still produces candidates. The merge path is covered by 2 tests. | — | Closing it is what surfaced the ⑤ disclosure-deletion defect. |
-| ~~R5~~ | ~~Nothing is committed.~~ **CLOSED.** The repair is committed to the branch `repair/end-to-end-phase-2` as three commits — backend (68 files), frontend (3 files), docs and `.gitignore` — each one verified by its own gate before being made: the backend suite at 674/31/0, `tsc --noEmit` and `eslint` clean for the frontend. **Local only. Nothing is pushed and nothing is deployed**, both of which need explicit approval. | — | Three commits rather than one per repair stage: the changes are interdependent, and committing intermediate states that no suite passes against would have made the history look incremental while being less honest than three commits that each pass their own verification. The working tree now holds only seven verification screenshots, left untracked as a record of one browser run rather than repository content. |
+| ~~R5~~ | ~~Nothing is committed.~~ **CLOSED.** The repair is committed to the branch `repair/end-to-end-phase-2` as three commits — backend (68 files), frontend (3 files), docs and `.gitignore` — each one verified by its own gate before being made: the backend suite at 674/31/0 (678/31/0 after the container work below), `tsc --noEmit` and `eslint` clean for the frontend. **Local only. Nothing is pushed and nothing is deployed**, both of which need explicit approval. | — | Three commits rather than one per repair stage: the changes are interdependent, and committing intermediate states that no suite passes against would have made the history look incremental while being less honest than three commits that each pass their own verification. The working tree now holds only seven verification screenshots, left untracked as a record of one browser run rather than repository content. |
 | R6 | **Disclosure volume still high.** 8 user-facing warnings on the live market-hours run, down from 37 pre-market and 78 before grouping. Honest, but still dense out of hours. | **P2** | Grouping fixed the duplication, and the market-open run shows most of the remaining volume was genuinely degraded pre-market data rather than a presentation problem. Further reduction risks hiding things. |
 
 | ~~R7~~ | ~~Single-stock return data shows an implausibly weak correlation structure.~~ **CLOSED — and it was never a defect.** Root-caused, not explained away. Two things were conflated. **(a) The data is right.** The product's return series is **byte-identical** to an independent recompute straight from the raw Yahoo JSON — `maxdiff = 0.00e+00` for both the AAPL and the SPY leg — so no stage of the pipeline is distorting it. **(b) The window is the whole story.** `LOOKBACK_DAYS = 252` is what the product actually fits on; the same two series over 500 sessions give AAPL/SPY R²=**0.354**, ρ=**+0.595**, β=**1.03**. Single-stock/index correlation genuinely collapsed over the trailing twelve months — XOM/SPY flips **+0.115 → −0.329** between the two windows — while index-replication pairs are window-invariant by construction (VOO/SPY 0.994 → 0.996). Mega-cap dispersion, correctly measured. And correctly *gated*: SPY is **rejected** as an AAPL cross hedge at R²=0.084 < `MIN_CROSS_R2 = 0.30`, which is the system declining to sell a hedge it cannot justify. | — | The anomaly was real, the alarm was right to raise it, and the answer is that a 252-day ρ of 0.29 is what AAPL/SPY *was* over this particular year. Pinned by the live-provider suite, which asserts both legs carry identical dates and 501 observations. |
@@ -586,6 +680,16 @@ density out of market hours) stays open by judgement: grouping fixed the
 duplication, the market-open run showed most of the remaining volume was
 genuinely degraded pre-market data, and reducing it further risks hiding
 things.
+
+**One P0 was found and closed after that sentence was first written**, and the
+sequence is the point. R5 was closed by committing the repair; building the
+container — the verification the previous pass had recorded as impossible —
+then found five live API keys in an image layer (defect 37, §F). It is fixed,
+the image is rebuilt and re-verified 11/11, and the suite now evaluates
+`.dockerignore` instead of asserting its text. **No P0 remains open.** What
+remains unverified is the deployment *platform* rather than the artefact:
+Cloud Run's networking, memory limits and cold start, and the LLM path inside
+the container.
 
 **R7 is closed by root cause, not by argument.** The previous cycle recorded
 it as *"unresolved rather than explained away"*, which was the right call on
@@ -610,7 +714,7 @@ reproducing production's conditions.
 
 | Suite | Result |
 |---|---|
-| **Full backend suite** | **674 passed, 31 skipped, 0 failed** — 91.4s and 52.1s on two runs |
+| **Full backend suite** | **678 passed, 31 skipped, 0 failed** — 50.4s; 91.4s and 52.1s on earlier runs this cycle |
 | **Live-provider suite, market open** | **21 passed, 0 skipped** in 2.6s — `OPTIONQ_LIVE_TESTS=1`, 09:58 EDT 2026-10-29 |
 | Skips in the default run | The same 21 live tests, excluded by the opt-in gate rather than by failure |
 | End-to-end API integration (`test_e2e_api.py`) | **59 passed** offline |
@@ -812,35 +916,164 @@ now tested at the unit, pipeline and live-HTTP levels.
 | **Results cannot be read against the wrong inputs** | **Verified** | Editing any input after a run raises a stale-results banner with a re-run button; breaking the form clears the result rather than leaving real figures under a validation message. 5 browser checks **[verified]** |
 | **The journey survives the production runtime** | **Verified, with one stated limit** | See below — the runtime was reproduced from the image's own pins and booted through its own `CMD`; **the image was never built** |
 
-### The production runtime, reproduced — and what that does and does not prove
+### The container, built and run — and the three defects that only a build could find
 
 Phase 5 asks for the Docker and cloud configuration to be *verified*, not
-merely inspected. No container runtime exists on this machine — `docker`,
-`podman`, `colima`, `nerdctl`, `lima` and `finch` are all absent and
-Docker.app is not installed — so the image could not be built. What was done
-instead reproduces everything about the container except its kernel isolation:
+merely inspected. An earlier pass of this report recorded that no container
+runtime existed on this machine and that the image therefore could not be
+built; it reproduced the runtime in a clean venv instead and stated the gap
+plainly. **That conclusion was wrong in one important respect.** No runtime was
+*present*, but Homebrew and hardware virtualization were both available
+(`kern.hv_support = 1`), so one could be *installed*. Podman 6.1.4 was
+installed, its VM started, and because this host is arm64 while Cloud Run is
+x86-64, the image was built for the deployment target explicitly:
 
-| What was reproduced | How | Result |
-|---|---|---|
-| The dependency closure | A **clean venv** built from `api/requirements.txt`'s exact pins on Python **3.13.2**, the same minor as `python:3.13-slim` | Installed clean; every import the app makes resolves |
-| The filesystem the image ships | A staged tree copied under `.dockerignore`'s rules | **0** `.db` files, **no** secrets, no local venv |
-| The entrypoint | Booted with the Dockerfile's own `CMD` (uvicorn, same module path and port) | `/health` → **200** |
-| Fail-closed startup | Booted with secrets removed | `ConfigurationError: Refusing to start:` **naming all four problems**, process exits non-zero — this is the real `validate_environment()` in the lifespan handler, not a unit test of it |
-| The auth matrix | All four privileged routes, taken from `/openapi.json` rather than guessed | Missing/short/wrong secret → **503/401**; valid `Authorization: Bearer` → **200**. Four-by-four, fully correct |
-| A real analysis | `POST /portfolio/analyze` on live market data | **200, 41,688 bytes, 13.06s.** Real contract `AAPL261218P00350000`, real quotes, `premium_source: market_mid`, `iv_source: contract_iv`, budget **4,160.50 ≤ 9,747.38** (exactly the 2% requested), and the MSFT liquidity disclosure **surviving into `cons`** |
-| The cache under container ownership | `OPTIONQ_CACHE_DB` pointed at a writable directory outside the app tree | 4.5MB written to the configured path, **nothing** written into the app tree |
+```
+podman build --platform linux/amd64 -t optionq-api:verify -f Dockerfile .
+```
 
-**What this does not prove.** That the image builds; that `python:3.13-slim`'s
-system libraries satisfy every wheel (the pins installed against macOS wheels
-here, not manylinux ones); that Cloud Run's networking, memory limit and cold
-start behave. Those require a build, and a build requires a container runtime
-that is not installed. **This limit is stated rather than papered over**, and
-it is the reason deployment readiness sits at 7 and not higher.
+It built: 11 steps, exit 0, all 73 distributions resolving to `cp313` linux
+x86-64 **wheels** with zero source builds. Then it was run, and the run found
+three defects that no amount of static inspection had found — including one P0
+that **this report had already claimed was fixed**.
 
-One thing noted and not acted on: `wrapt-2.6.0.dev1`, a **dev prerelease**,
-resolves transitively into the runtime closure. It installs and the app runs,
-but a prerelease in a production dependency graph is worth pinning away before
-anything is deployed.
+| What the running container showed | Verdict |
+|---|---|
+| `/app/backend/.env` present, 713 bytes, holding `ANTHROPIC_API_KEY`, `HF_API_TOKEN`, `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `FRED_API_KEY` | **P0.** Every key in a published image layer |
+| `/app/backend/.venv` present, **417MB** of host arm64 binaries | Image 1.08GB instead of 668MB, and host binaries beside the installed ones |
+| `/app/backend/hedgeos_cache.db` present, 6.4MB, root-owned | **Defect 35 was never actually fixed** — this is the exact state its row in the register describes as resolved |
+
+These are not three new findings. They are **one new defect — 37 — and the
+discovery that two fixes this report already recorded as closed were never in
+effect.** The secret-in-image fix and defect 35 both consisted of adding rules
+to `.dockerignore`; the rules were added, and they matched nothing. Both rows
+reopen and close again here, for real this time, and the register says so
+rather than quietly keeping the original ticks.
+
+**One root cause — defect 37.** `.dockerignore` is not `.gitignore`. Git
+re-applies a bare pattern at every directory level; Docker and Buildah match
+each pattern **once, against the whole path relative to the context root**. So
+`.env` excludes `./.env` and nothing else, `*.db` excludes `./*.db` and nothing
+else, and every rule in that file aimed at something *inside* `backend/`
+matched nothing at all. `backend/tests/` was the only rule that worked — because
+it names its path, which is why `backend/tests` was correctly absent and the
+leak looked like a solved problem.
+
+This was confirmed against two throwaway builds rather than asserted from
+memory: a context holding `.env`, `sub/.env`, `sub/cache.db` and
+`sub/.venv/lib.py`, built once with bare patterns and once with `**/`-anchored
+ones.
+
+| `.dockerignore` contents | What survived into the image |
+|---|---|
+| `.env`, `*.db`, `.venv/` | `sub/.env`, `sub/cache.db`, `sub/.venv/lib.py` — root `.env` excluded, everything nested kept |
+| `**/.env`, `**/*.db`, `**/.venv/` | nothing |
+
+That second row also settles a detail the fix depends on: `**/` matches **zero**
+or more leading components, so the anchored form still covers the root.
+
+**How this got past the test suite — defect class ④, caught red-handed.** Three
+tests existed for exactly this. They read:
+
+```python
+assert ".env" in patterns
+assert ".venv/" in patterns
+assert "*.pem" in patterns and "*.key" in patterns
+```
+
+All three passed. They assert that a rule is *written*, and the comment above
+them asserts what it *does* — and nothing connected the two. This is the
+asserted-label defect in its purest form, and it was sitting in the file whose
+whole purpose is to catch deployment defects that tests cannot see.
+
+**The fix.** Three parts, because the pattern fix alone would leave the same
+hole open to the next edit:
+
+1. `.dockerignore` rewritten with every nested rule `**/`-anchored, and a
+   header explaining the semantics so the next person does not reintroduce it.
+2. A **build-time guard** in the Dockerfile: a `RUN` step that `find`s the
+   copied tree for `.env`, `*.pem`, `*.key`, `*.db`, `.venv` and `tests/`, and
+   **fails the build** if any is present. A leak is now a failed build rather
+   than a published secret. Revert-verified: restoring the bare patterns fails
+   the build at step 6 with `REFUSING TO BUILD:` and the offending paths listed.
+3. The three string-presence tests replaced by tests that **evaluate**
+   `.dockerignore` — a translator for Docker's glob semantics (`**/` → zero or
+   more components, `*` and `?` not crossing `/`, last match wins, `!`
+   negation), run against the paths that actually leaked. Revert-verified: with
+   the old patterns, `test_the_paths_that_leaked_are_excluded` fails on
+   `backend/.env`.
+
+**After the fix — the image rebuilt and re-verified, 11 of 11:**
+
+| Check | Result |
+|---|---|
+| Image contents | No `.env`, no `.pem`/`.key`, no `.venv`, no `.db`, no `backend/tests` |
+| Image size | **1.08GB → 668MB** |
+| Runs unprivileged | `uid=10001(optionq)`, not root |
+| Platform | `x86_64`, `glibc 2.41`, Python `3.13.18` — the deployment target, not the host |
+| Every runtime import | `FAILED_IMPORTS: []` — and `backend.main` imports, which is the `b59d1e2` failure mode |
+| The pinned `wrapt` | `2.5.2` inside the image, not the dev prerelease |
+| Fail-closed: no secrets | `ConfigurationError: Refusing to start:` naming both missing secrets, **exit 3** |
+| Fail-closed: short secrets | **exit 3** |
+| Fail-closed: `http://localhost` origin in production | **exit 3**, naming both the dev origin and the non-HTTPS scheme |
+| `/health` | **200** `{"status":"ok","version":"0.1.0"}` |
+
+**The auth matrix, against the live container.** Both credentials, both route
+groups, four states each — and the point of the test is the two cells where a
+*valid* credential is refused, because that is what proves `CRON_SECRET` does
+not unlock the admin surface:
+
+| | no header | wrong token | `ADMIN_API_KEY` | `CRON_SECRET` |
+|---|---|---|---|---|
+| `GET /admin/training/status` | 401 | 401 | **200** | **401** |
+| `GET /admin/cron/retrain-fast` | 401 | 401 | **401** | **200** |
+
+Every refusal body is `{"detail":"Unauthorized"}` — no internal detail, no
+stack, no hint which half of the credential pair was wrong. The `CRON_SECRET`
+cell returning 200 means a real fast retrain executed inside the container and
+succeeded, which exercises the scheduler path as a side effect.
+
+**A real analysis, through the container.** `POST /portfolio/analyze` with the
+AAPL(500)/MSFT(300)/SPY(200) payload, `protection_level 0.1`,
+`max_hedge_cost_pct 0.02`, `hedge_horizon_days 90`:
+
+| | |
+|---|---|
+| Response | **200**, 41.6KB, **31.2s** |
+| Portfolio | notional **$487,369.00**, cost basis $334,810.00, unrealized **+$152,559.00** |
+| Regime | `mid_vol`, VIX **17.20**, `regime_source: gmm_combined`, `regime_degraded: false` |
+| Recommendations | 3 ranked assets, 11 candidates — real OCC contracts (`SPY261218P00769000`), real strikes and listed expiries |
+| Budget | cost **$4,160.50** against a **$9,747.38** cap = **0.854%** of notional against the 2% requested, `hedge_budget_utilization: 0.4268` |
+| Provenance | `source_counts: 42 cache / 38 live / 2 unavailable / 2 fallback`, every degraded field named with its reason |
+| Disclosure | 3 warnings surfaced, including UUP IV unavailable and 12 SPY contracts excluded for a bid-ask spread wider than 50% of mid |
+| LLM | `llm_notice` states explanations are unavailable and the narrative came from the computed figures |
+| Cache | **4.68MB** written to `/var/cache/optionq/`, owned by `optionq`; **nothing** written into `/app`, no `/tmp` fallback |
+| Container logs | **zero** tracebacks or errors across the whole session |
+
+Note what the disclosure does here rather than what it says: UUP's missing
+per-strike IV is reported as `unavailable` and `fallback` with the exact reason,
+and the SPY candidates whose mid was not an attainable fill price were
+**excluded**, not quietly priced. That is rule 5 holding under live data in the
+deployment artifact.
+
+**What this still does not prove.** Three things, stated rather than papered
+over:
+
+- **Cloud Run itself.** Networking, memory limits, cold start, request timeouts
+  and the real service account are untested. The image is verified; the platform
+  is not. Nothing has been deployed, and nothing will be without approval.
+- **The LLM path in the container.** No `ANTHROPIC_API_KEY` was passed, so the
+  explainer ran its deterministic fallback. That the fallback discloses itself
+  correctly is verified; the Claude path in the container is not.
+- **amd64 under emulation.** The container ran x86-64 on arm64 via qemu. The
+  logic, the imports and the glibc are the deployment target's; the instruction
+  timing is not, which is part of why the analysis took 31.2s here.
+
+**What it does prove** is the thing the previous pass of this report could only
+assume — and the assumption was wrong, in the most expensive direction
+available. Every green test in this suite, and every line of this report's
+earlier deployment section, coexisted with five live API keys sitting in an
+image layer. The build was the only thing that could see it.
 
 ---
 
@@ -853,9 +1086,9 @@ anything is deployed.
 | Data integrity / honesty | 1 | 9 | The strongest dimension. Provenance ledger, rejection over clamping, disclosed substitution — and disclosures that now survive the LLM layer, proven live. Held at 9, not raised: this is where the P0-class deletion defect was, and it went two cycles undetected |
 | Security | 2 | 9 | Fails closed, sanitised, scoped, constant-time, startup-validated |
 | Reliability | 3 | 8 | Timeouts both sides; degraded paths explicit; no silent fallbacks |
-| Testing | 2 | 9 | 674 tests + 21 live + 28 browser checks; every new test revert-verified, two found to pass vacuously and strengthened. Held at 9: the read-only-filesystem crash proves the suite's blind spot is *environmental*, and the new `test_cache_resilience.py` closes that one case by `chmod`-ing a real directory rather than by mocking the failure |
+| Testing | 2 | 9 | 678 tests + 21 live + 28 browser checks; every new test revert-verified, two found to pass vacuously and strengthened. Held at 9: the read-only-filesystem crash proves the suite's blind spot is *environmental*, and the new `test_cache_resilience.py` closes that one case by `chmod`-ing a real directory rather than by mocking the failure |
 | UX / product polish | 3 | 9 | Disclosure-first UI, browser-verified; stale results can no longer be read as current; −1 for out-of-hours warning density (R6) |
-| Deployment readiness | 2 | 7 | Startup and auth fail-closed behaviour **verified at runtime**; secrets verified absent from the built frontend; all 17 pins match tested versions; 12 tests assert the image config against what the code imports. Raised to 7 this cycle: the runtime was reproduced as closely as this machine allows — a clean venv built from `api/requirements.txt`'s exact pins on Python 3.13.2 (matching `python:3.13-slim`), a staged tree honouring `.dockerignore`, booted through the Dockerfile's own `CMD`. Fail-closed fired on a real boot, a full `/portfolio/analyze` returned **200 in 13.06s** on live data, and the cache wrote only to `OPTIONQ_CACHE_DB`. Not 8: **the image itself has still never been built — Docker is not installed on this machine — and nothing is deployed, by instruction** |
+| Deployment readiness | 2 | **8** | Startup and auth fail-closed behaviour **verified inside the built container**; secrets verified absent from the built frontend and from the image; all 18 pins match tested versions and all 73 distributions resolve to `cp313` linux x86-64 wheels with zero source builds. Raised 7 → 8 this cycle: the image was built for `linux/amd64` and run — 11/11 checks, 668MB, unprivileged, fail-closed on three bad configurations, `/health` 200, the full auth matrix with both valid-credential refusals correct, a real `POST /portfolio/analyze` at **200 in 31.2s** on live data within 0.854% of a 2% budget, the cache confined to `/var/cache/optionq`, zero tracebacks. A build-time guard now fails the build on any leaked secret or database. **Not 9:** the first build found five live API keys in the image (defect 37), which is what a cycle of asserting configuration instead of building it costs; and Cloud Run's networking, memory limits and cold start remain untested, the LLM path was not exercised in the container, nothing is deployed by instruction, and the container ran under qemu emulation |
 | **Overall** | **2.5** | **9.0** | |
 
 ---
@@ -866,14 +1099,14 @@ anything is deployed.
 
 > Took a quantitative hedging prototype that passed its own smoke tests and
 > failed a readiness audit at 2.5/10, and repaired it to a verified
-> end-to-end product: 35 defects across market data, options pricing, risk
+> end-to-end product: 37 defects across market data, options pricing, risk
 > measurement, position sizing, ranking, LLM integration and security, each
 > with a regression test confirmed to fail against the unfixed code. Built a
 > request-scoped data-provenance ledger so every figure reports whether it
 > was live, cached, substituted or unavailable, and a disclosure record the
 > explanation layer cannot overwrite — found when an LLM reply was shown to
 > delete *"premium shown is theoretical"* from live API responses. Grew the
-> suite to 674 tests including real-HTTP end-to-end integration, and verified
+> suite to 678 tests including real-HTTP end-to-end integration, and verified
 > the full user journey against a live server in and out of market hours and
 > against a reproduced production runtime — which is how the last two defects
 > were found: a history path serving dividend-unadjusted prices, and a cache
@@ -921,9 +1154,13 @@ knows the formulas and one who knows what a number means.
 - ❌ Any user, adoption, accuracy or performance figure. There are no users
   and no backtest.
 
-- ❌ "Container-verified." The runtime was reproduced from the image's own
-  pins and booted through its own `CMD`, but **the image has never been
-  built** — no container runtime is installed on this machine.
+- ⚠️ "Container-verified." Now largely true and worth stating precisely: the
+  image **was** built for `linux/amd64` and run, and the workflow, the
+  fail-closed paths, the auth matrix and the cache confinement were all
+  verified inside it. What is still **not** verified is Cloud Run itself — its
+  networking, memory limits and cold start — and the container ran x86-64
+  under emulation. Say "image-verified, platform-unverified," not
+  "production-ready."
 
 **The honest framing:** *a verified decision-support engine, pending
 market-hours validation of its live pricing path.* That sentence is both more

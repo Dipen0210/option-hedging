@@ -16,6 +16,33 @@ RUN pip install --no-cache-dir -r requirements.txt
 # image; without it this line published every API key in an image layer.
 COPY backend/ ./backend/
 
+# Fail the build rather than publish a leak.
+#
+# The exclusions above are the only thing standing between `COPY backend/` and
+# an image layer containing backend/.env. They were wrong once already — bare
+# .dockerignore patterns match only at the context root, so every rule aimed at
+# something inside backend/ silently matched nothing, and the image carried
+# five live API keys, the 417MB host virtualenv and a 6.4MB SQLite cache. A
+# test asserting the patterns were present in the file could not see it.
+#
+# This check can: it runs against the copied tree, inside the image, on every
+# build. A leak becomes a failed build instead of a published secret.
+RUN set -e; \
+    bad=""; \
+    for p in $(find ./backend \
+                 -name '.env' -o -name '.env.*' ! -name '.env.example' \
+                 -o -name '*.pem' -o -name '*.key' \
+                 -o -name '*.db' -o -name '*.sqlite*' \
+                 -o -name '.venv' -o -name 'tests' -type d); do \
+      bad="$bad $p"; \
+    done; \
+    if [ -n "$bad" ]; then \
+      echo "REFUSING TO BUILD: .dockerignore let these into the image:" >&2; \
+      for p in $bad; do echo "  $p" >&2; done; \
+      echo "Patterns inside a subdirectory must be '**/'-anchored." >&2; \
+      exit 1; \
+    fi
+
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
 

@@ -22,6 +22,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from backend.tests.fixtures.dockerignore import excluded as dockerignore_excluded
 from backend.api import security
 from backend.api.security import (
     ConfigurationError, MIN_SECRET_LENGTH, _bearer, _matches,
@@ -445,27 +446,36 @@ class TestDeploymentConfiguration:
         import pathlib
         return pathlib.Path(__file__).resolve().parents[2]
 
-    def _dockerignore_patterns(self):
+    def test_dockerignore_exists(self):
         path = self._repo_root() / ".dockerignore"
         assert path.exists(), (
             "no .dockerignore: `COPY backend/` would publish backend/.env"
         )
-        return [
-            line.strip() for line in path.read_text().splitlines()
-            if line.strip() and not line.strip().startswith("#")
-        ]
 
-    def test_dockerignore_excludes_env_files(self):
-        patterns = self._dockerignore_patterns()
-        assert ".env" in patterns
-        assert any(p.startswith(".env.") for p in patterns)
+    # These two tests used to assert that the strings ".env", "*.pem", "*.key"
+    # and ".venv/" appeared in .dockerignore. They passed, and the image built
+    # from that file contained backend/.env with five live API keys. A bare
+    # .dockerignore pattern matches only at the context root, so every rule
+    # aimed inside backend/ matched nothing. See
+    # backend/tests/fixtures/dockerignore.py — the matcher there is calibrated
+    # against real builds, and these now check what the rules *do*.
+
+    def test_dockerignore_excludes_env_files_inside_the_backend_package(self):
+        assert dockerignore_excluded("backend/.env"), (
+            "backend/.env would be copied into an image layer, where it stays "
+            "readable to anyone who can pull the image"
+        )
+        assert dockerignore_excluded("backend/.env.local")
+        assert dockerignore_excluded(".env")
         # The template carries no values and documents the required vars.
-        assert "!.env.example" in patterns
+        assert not dockerignore_excluded("backend/.env.example")
 
     def test_dockerignore_excludes_private_keys_and_the_virtualenv(self):
-        patterns = self._dockerignore_patterns()
-        assert "*.pem" in patterns and "*.key" in patterns
-        assert ".venv/" in patterns
+        assert dockerignore_excluded("backend/server.pem")
+        assert dockerignore_excluded("backend/secrets/server.key")
+        assert dockerignore_excluded(
+            "backend/.venv/lib/python3.13/site-packages/certifi/cacert.pem"
+        ), "the host virtualenv shadows the versions pip resolved in the image"
 
     def test_dockerfile_installs_the_tested_runtime_requirements(self):
         text = (self._repo_root() / "Dockerfile").read_text()

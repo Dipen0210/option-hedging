@@ -19,8 +19,15 @@ code that has to run against them.
 
 So these tests deliberately assert against the *files that configure the
 deployment* rather than against behaviour. That is unusual, and it is the
-point: the behaviour they protect cannot be reproduced on this machine, where
-Docker is not installed. A missing pin is still fully detectable from here.
+point: a `pytest` run must not require a container runtime, a network, and the
+several minutes an image build costs, so the suite checks the only thing it can
+check cheaply and on every run — that the configuration is consistent with the
+code that has to run against it. A missing pin is fully detectable from here.
+
+What these tests therefore do *not* do is prove the image builds or runs. That
+is a separate, out-of-band verification against a real build; its result is
+recorded in REPAIR_REPORT.md. Treating a green run of this file as evidence
+that the container works would be the same mistake in a new place.
 """
 import ast
 import pathlib
@@ -29,6 +36,11 @@ import sys
 
 import pytest
 from importlib.metadata import packages_distributions, version, PackageNotFoundError
+
+# Shared with test_security.py, which asserted the same thing about the same
+# file and was wrong in the same way. One implementation, calibrated against
+# real builds — see the module docstring.
+from backend.tests.fixtures.dockerignore import excluded as dockerignore_excluded
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 BACKEND = REPO / "backend"
@@ -142,36 +154,128 @@ class TestTheImageInstallsWhatTheCodeImports:
         #   python-dotenv — backs pydantic-settings' env_file loading
         #   curl-cffi     — yfinance's transport; a version mismatch there
         #                   costs every quote, so it is not left floating
-        not_imported_on_purpose = {"uvicorn", "python-dotenv", "curl-cffi"}
+        #   wrapt         — transitive via arch → statsmodels → formulaic, and
+        #                   pinned only to keep a *prerelease* out of the
+        #                   runtime closure. See
+        #                   test_no_pin_is_a_prerelease for the defect.
+        not_imported_on_purpose = {
+            "uvicorn", "python-dotenv", "curl-cffi", "wrapt",
+        }
         unused = sorted(set(_pinned()) - imported_dists - not_imported_on_purpose)
         assert not unused, f"pinned but never imported by backend/: {unused}"
 
 
+class TestNoPinIsAPrerelease:
+    """
+    The runtime closure resolved `wrapt-2.6.0.dev1` — a development build — in
+    preference to the 2.5.2 stable release, and installed it on both macOS and
+    linux/amd64.
+
+    The cause is not obvious and is worth stating, because it will recur:
+    `formulaic` (transitive via arch → statsmodels) declares
+    `wrapt>=1.17.0rc1` for Python >= 3.13. A version specifier that *names* a
+    prerelease makes pip willing to consider prereleases for that requirement,
+    so the resolver was free to take the newest thing in the index — a dev
+    build — rather than the newest stable one. Nothing warned.
+
+    A dev prerelease carries no release guarantees and can change behaviour
+    between two builds whose requirements files are byte-identical. That is
+    unacceptable in the dependency graph of something that prices hedges, and
+    it is exactly the kind of drift the rest of this suite exists to catch.
+    """
+
+    # PEP 440 pre/dev/post-release suffixes on the final version segment.
+    _PRERELEASE = re.compile(r"(a|b|rc|alpha|beta|dev)\d*$|\.dev\d*$", re.I)
+
+    def test_no_pin_is_a_prerelease(self):
+        suspect = sorted(
+            f"{name}=={ver}" for name, ver in _pinned().items()
+            if self._PRERELEASE.search(ver)
+        )
+        assert not suspect, (
+            "prerelease versions pinned for the runtime image: "
+            f"{suspect}. A dev or rc build has no release guarantees; pin the "
+            "stable release that satisfies the same constraint."
+        )
+
+    def test_the_installed_wrapt_is_the_stable_release(self):
+        # The pin is only worth having if it is what actually gets installed,
+        # and this is the one package where a transitive constraint actively
+        # pulls the other way.
+        try:
+            installed = version("wrapt")
+        except PackageNotFoundError:
+            pytest.skip("wrapt is not installed in this environment")
+        assert not self._PRERELEASE.search(installed), (
+            f"wrapt {installed} is a prerelease. formulaic's "
+            "`wrapt>=1.17.0rc1` lets pip resolve prereleases, so the pin in "
+            "api/requirements.txt is what holds this to a stable build — "
+            "reinstall from that file."
+        )
+        assert installed == _pinned()["wrapt"], (
+            f"installed wrapt {installed} does not match the pin "
+            f"{_pinned()['wrapt']}"
+        )
+
+
 class TestTheImageDoesNotShipSecretsOrTests:
 
-    def test_dockerignore_excludes_the_env_file(self):
-        # `COPY backend/ ./backend/` copies backend/.env unless excluded, and
-        # an image layer is readable by anyone who can pull the image.
-        patterns = {
-            l.strip() for l in DOCKERIGNORE.read_text().splitlines()
-            if l.strip() and not l.strip().startswith("#")
-        }
-        assert ".env" in patterns
-        assert ".env.*" in patterns
-        assert "!.env.example" in patterns, (
+    # The three tests this class used to open with asserted that the strings
+    # ".env", ".venv/" and "*.pem" appeared somewhere in .dockerignore. All
+    # three passed. The image built from that file contained backend/.env with
+    # five live API keys, the 417MB host virtualenv and a 6.4MB SQLite cache.
+    #
+    # Checking that a rule is *written* is not checking that it *matches*.
+    # .dockerignore is not .gitignore: Git re-applies a bare pattern at every
+    # directory level, Docker and Buildah match each pattern once against the
+    # whole path relative to the context root. So `.env` excludes `./.env` and
+    # nothing else, and every rule aimed at something inside backend/ matched
+    # nothing at all. `backend/tests/` was the only one that worked, because it
+    # names its path.
+    #
+    # These tests evaluate the file instead, against the paths that actually
+    # leaked, using a matcher calibrated against two real builds: with bare
+    # patterns a nested sub/.env survives into the image, with `**/`-anchored
+    # patterns it does not.
+
+    def test_the_paths_that_leaked_are_excluded(self):
+        for path in (
+            "backend/.env",
+            "backend/.env.local",
+            "backend/.venv/lib/python3.13/site-packages/certifi/cacert.pem",
+            "backend/hedgeos_cache.db",
+            "backend/data/hedgeos_cache.db-wal",
+            "backend/key.pem",
+            "backend/secrets/server.key",
+            "backend/tests/test_deployment_contract.py",
+        ):
+            assert dockerignore_excluded(path), (
+                f"{path} would be copied into the image. A pattern meant to "
+                f"match inside a subdirectory must be '**/'-anchored or name "
+                f"its path; a bare pattern matches only at the context root."
+            )
+
+    def test_the_root_level_paths_are_still_excluded(self):
+        # Anchoring the patterns must not stop them matching at the root.
+        for path in (".env", "local.db", "server.key"):
+            assert dockerignore_excluded(path), f"{path} at the context root is not excluded"
+
+    def test_the_env_example_survives_the_exclusion(self):
+        # It is documentation, and the image is where someone looks to find out
+        # which variables the service expects.
+        assert not dockerignore_excluded("backend/.env.example"), (
             "the example file is documentation and should survive the exclusion"
         )
 
-    def test_dockerignore_excludes_the_local_virtualenv(self):
-        patterns = {l.strip() for l in DOCKERIGNORE.read_text().splitlines()}
-        assert ".venv/" in patterns, (
-            "copying the host virtualenv shadows the versions pip just "
-            "resolved inside the image"
-        )
-
-    def test_dockerignore_excludes_private_keys(self):
-        patterns = {l.strip() for l in DOCKERIGNORE.read_text().splitlines()}
-        assert "*.pem" in patterns and "*.key" in patterns
+    def test_the_backend_package_itself_is_not_excluded(self):
+        # An over-broad rule that removed the application would be caught by
+        # the import test, but far later and far less legibly.
+        for path in (
+            "backend/main.py",
+            "backend/api/security.py",
+            "backend/ml_models/gmm_regime.joblib",
+        ):
+            assert not dockerignore_excluded(path), f"{path} is excluded from the image"
 
     def test_the_env_example_holds_no_real_values(self):
         example = REPO / "backend" / ".env.example"
