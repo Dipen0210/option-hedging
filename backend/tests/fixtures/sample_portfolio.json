@@ -1,6 +1,8 @@
 {
+  "_comment": "Synthetic PortfolioInput for deterministic parsing/pricing tests. Share counts and purchase prices are made-up USER INPUT (not market data); tickers must exist in backend.config.instrument_universe. total_notional is deliberately cost-basis-like so the server-side valuation divergence warning stays exercised.",
   "holdings": [
     {
+      "position_type": "stock",
       "ticker": "IWM",
       "shares": 2295,
       "purchase_price": 261.49,
@@ -8,16 +10,18 @@
       "asset_class": "equity"
     },
     {
-      "ticker": "VOO",
+      "position_type": "stock",
+      "ticker": "VTI",
       "shares": 500,
-      "purchase_price": 480.00,
+      "purchase_price": 480.0,
       "purchase_date": "2026-01-15",
       "asset_class": "equity"
     },
     {
-      "ticker": "PDBC",
+      "position_type": "stock",
+      "ticker": "GLD",
       "shares": 3000,
-      "purchase_price": 14.50,
+      "purchase_price": 14.5,
       "purchase_date": "2025-11-01",
       "asset_class": "commodity"
     }

@@ -10,12 +10,17 @@ POST /instruments/swaps          — swaps only
 
 All endpoints accept the same PortfolioInput body and return HedgeOutput.
 Market data is auto-fetched from yfinance.
+
+Error policy: internal exception text is logged against a correlation id and
+never returned. Clients get a generic 500 carrying only that id.
 """
 import asyncio
 import logging
 from typing import List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
+
+from backend.api.security import internal_error
 
 from backend.models.portfolio_models import PortfolioInput
 from backend.models.hedge_models import HedgeOutput
@@ -42,8 +47,7 @@ async def options_hedge(portfolio: PortfolioInput):
     try:
         return await _run(portfolio, ["options"])
     except Exception as exc:
-        logger.exception("Options analysis failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc, "options analysis")
 
 
 @router.post("/futures", response_model=HedgeOutput)
@@ -52,8 +56,7 @@ async def futures_hedge(portfolio: PortfolioInput):
     try:
         return await _run(portfolio, ["futures"])
     except Exception as exc:
-        logger.exception("Futures analysis failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc, "futures analysis")
 
 
 @router.post("/inverse-etfs", response_model=HedgeOutput)
@@ -62,8 +65,7 @@ async def inverse_etfs_hedge(portfolio: PortfolioInput):
     try:
         return await _run(portfolio, ["inverse_etfs"])
     except Exception as exc:
-        logger.exception("Inverse ETF analysis failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc, "inverse etf analysis")
 
 
 @router.post("/forwards", response_model=HedgeOutput)
@@ -72,8 +74,7 @@ async def forwards_hedge(portfolio: PortfolioInput):
     try:
         return await _run(portfolio, ["forwards"])
     except Exception as exc:
-        logger.exception("Forwards analysis failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc, "forwards analysis")
 
 
 @router.post("/swaps", response_model=HedgeOutput)
@@ -82,5 +83,4 @@ async def swaps_hedge(portfolio: PortfolioInput):
     try:
         return await _run(portfolio, ["swaps"])
     except Exception as exc:
-        logger.exception("Swaps analysis failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc, "swaps analysis")

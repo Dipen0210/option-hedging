@@ -1,14 +1,42 @@
 """
 Covariance-based cross-hedge asset ranking.
 
-For each user asset, computes rolling 60-day correlation against the
-project's hedge universe and returns a ranked list of candidates with:
+For each user asset, correlates the project hedge universe against it over a
+one-year window and returns a ranked list of candidates with:
   - correlation / R² (for basis_risk_r2)
   - hedge_direction: "opposite" (positive corr → buy puts/short)
                      "same"     (negative corr → buy calls/long)
   - hedge_category:  "cross_hedge" | "macro_hedge"
 
 Only tickers already in the project universe are considered.
+
+Two defects in the previous version produced the kind of result that
+discredits the whole feature — XLP, a defensive staples ETF, ranked as the
+best cross hedge for AAPL at R²=0.10, meaning 90% of AAPL's movement was left
+unhedged by the instrument offered to hedge it:
+
+1. The admission gates were stated as correlations while the quantity that
+   decides how much of a move a hedge removes is R². `MIN_CORR_THRESHOLD` of
+   0.25 admits R²=0.0625; the macro threshold of 0.10 admits R²=0.01. A
+   candidate explaining 6% of the variance is not a hedge, and once admitted
+   it could rank first simply because nothing better cleared the bar. The
+   gates are now expressed as R², at levels where the instrument actually
+   offsets the exposure.
+
+2. Each series was truncated to its own last N rows and only then aligned, so
+   two series ending on different dates were compared over different calendar
+   windows, and `dropna()` silently shrank the sample. With a floor of 20
+   overlapping observations a correlation could be reported off 20 points. The
+   alignment now happens first and the window is taken from the aligned frame,
+   so both legs always span the same dates.
+
+Window length is a variance/responsiveness trade-off. At 60 observations the
+standard error of a correlation near 0.3 is about 0.12, giving a 95% interval
+of roughly [0.07, 0.53] — ranking candidates on that is largely ranking noise.
+One year (252 trading days) cuts it to about 0.06 while still tracking a
+change in correlation regime within a quarter. The window and the sample size
+are returned with every candidate so the caller can disclose the basis of the
+estimate rather than presenting R² as exact.
 """
 import logging
 import pandas as pd
@@ -32,14 +60,31 @@ CROSS_HEDGE_UNIVERSE: List[str] = [
 # Tickers treated as macro/diversification hedges (low avg corr, crisis protection)
 MACRO_TICKERS = {"GLD", "TLT", "UUP", "HYG", "LQD"}
 
-# Minimum absolute correlation to qualify as a useful hedge
-MIN_CORR_THRESHOLD = 0.25
+# ── Admission gates, expressed as R² ─────────────────────────────────────────
+#
+# R² is the share of the asset's variance the hedge instrument explains, so it
+# is also, to first order, the share of the move a correctly-sized hedge
+# removes. Stating the gate in correlation units made a weak hedge look twice
+# as good as it was.
 
-# Looser threshold for macro tickers (they have lower unconditional corr)
-MACRO_CORR_THRESHOLD = 0.10
+# A cross hedge below this leaves most of the exposure in place; offering it as
+# a hedge misrepresents what it does.
+MIN_CROSS_R2 = 0.30            # |rho| >= 0.55
 
-# Lookback window in trading days
-LOOKBACK_DAYS = 60
+# Macro hedges are held for crisis diversification rather than variance
+# matching, so a lower bar is legitimate — but not an arbitrarily low one.
+MIN_MACRO_R2 = 0.10            # |rho| >= 0.32
+
+# Retained for callers that still reference the correlation form.
+MIN_CORR_THRESHOLD = MIN_CROSS_R2 ** 0.5
+MACRO_CORR_THRESHOLD = MIN_MACRO_R2 ** 0.5
+
+# Lookback window in trading days (approximately one year).
+LOOKBACK_DAYS = 252
+
+# Minimum aligned observations before a correlation is trusted at all. Twenty
+# points, the old floor, is not evidence of a relationship.
+MIN_OBSERVATIONS = 120
 
 # Cache TTL: 1 hour (correlations don't change fast)
 CORR_CACHE_TTL = 3600
@@ -60,7 +105,12 @@ def get_ranked_cross_hedges(
 
     Each dict:
         ticker          str
-        correlation     float   (signed, 60-day rolling)
+        correlation     float   (signed, over the last LOOKBACK_DAYS
+                                aligned observations — 252, not the 60
+                                this line claimed; the window was
+                                lengthened and the docstring was not,
+                                and a 60-day R² is roughly four times
+                                noisier than the one actually reported)
         covariance      float   (signed)
         r2              float   (correlation²)
         hedge_direction str     "opposite" | "same"
@@ -71,10 +121,13 @@ def get_ranked_cross_hedges(
     if cached:
         return cached
 
-    from backend.data.market_data import get_returns
+    from backend.data.market_data import align_series, get_returns
 
     try:
-        asset_ret = get_returns(asset_ticker).iloc[-LOOKBACK_DAYS:]
+        # Not truncated here. Each series is cut to the window only after it
+        # has been aligned with the asset, so the two legs always cover the
+        # same trading dates.
+        asset_ret = get_returns(asset_ticker)
     except Exception as e:
         logger.warning("covariance: cannot fetch returns for %s: %s", asset_ticker, e)
         return []
@@ -85,16 +138,30 @@ def get_ranked_cross_hedges(
         if ticker.upper() == asset_ticker.upper():
             continue
         try:
-            hedge_ret = get_returns(ticker).iloc[-LOOKBACK_DAYS:]
+            hedge_ret = get_returns(ticker)
 
-            # Align on common trading dates
-            aligned = pd.concat(
-                [asset_ret.rename("asset"), hedge_ret.rename("hedge")],
-                axis=1,
-            ).dropna()
+            # Align on common trading dates first, then take the window from
+            # the aligned frame. Truncating each series to its own last N rows
+            # before aligning compared different calendar periods whenever the
+            # two series ended on different dates.
+            #
+            # `align_series` rather than a bare `pd.concat`: it exists to
+            # centralise this join and it normalises both indexes first. A
+            # concat across a tz-aware and a tz-naive index, or across
+            # midnight-stamped and intraday-stamped dates, matches almost
+            # nothing and then `dropna()` hands back a handful of rows that
+            # look like a valid sample.
+            aligned = align_series(
+                asset=asset_ret, hedge=hedge_ret
+            ).iloc[-LOOKBACK_DAYS:]
 
-            if len(aligned) < 20:
-                logger.debug("covariance: insufficient overlap for %s (%d rows)", ticker, len(aligned))
+            n_obs = len(aligned)
+            if n_obs < MIN_OBSERVATIONS:
+                logger.debug(
+                    "covariance: %s vs %s — %d aligned observations, below the "
+                    "%d needed to estimate a correlation; skipped",
+                    asset_ticker, ticker, n_obs, MIN_OBSERVATIONS,
+                )
                 continue
 
             corr = float(aligned["asset"].corr(aligned["hedge"]))
@@ -103,16 +170,26 @@ def get_ranked_cross_hedges(
             if pd.isna(corr):
                 continue
 
-            threshold = MACRO_CORR_THRESHOLD if ticker in MACRO_TICKERS else MIN_CORR_THRESHOLD
-            if abs(corr) < threshold:
-                logger.debug("covariance: %s vs %s corr=%.3f below threshold — skipped", asset_ticker, ticker, corr)
+            r2 = corr ** 2
+            min_r2 = MIN_MACRO_R2 if ticker in MACRO_TICKERS else MIN_CROSS_R2
+            if r2 < min_r2:
+                logger.debug(
+                    "covariance: %s vs %s rho=%.3f R2=%.3f below the %.2f R2 "
+                    "floor — skipped",
+                    asset_ticker, ticker, corr, r2, min_r2,
+                )
                 continue
 
             results.append({
                 "ticker":      ticker,
                 "correlation": corr,
                 "covariance":  cov,
-                "r2":          corr ** 2,
+                "r2":          r2,
+                # Returned so the caller can disclose what the estimate rests
+                # on instead of presenting R2 as an exact quantity.
+                "n_obs":       n_obs,
+                "window_days": LOOKBACK_DAYS,
+                "corr_stderr": round((1 - r2) / ((n_obs - 1) ** 0.5), 4),
             })
 
         except Exception as e:

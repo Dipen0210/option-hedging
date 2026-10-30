@@ -205,8 +205,19 @@ class TestPromptBuilder:
         c = ctx["candidates"][0]
         assert "ticker" in c
         assert "strategy" in c
-        assert "delta" in c
         assert "score" in c
+
+        # Delta is exposed as two distinct keys on purpose: the LLM must not
+        # confuse a per-contract greek with the whole position's sensitivity.
+        # A bare "delta" key would be ambiguous, so assert both and the
+        # relationship between them (n_contracts=10, delta=-0.45 position-level).
+        assert "delta_per_contract" in c
+        assert "position_delta" in c
+        assert c["position_delta"] == pytest.approx(-0.45)
+        assert c["delta_per_contract"] == pytest.approx(-0.045)
+        assert c["position_delta"] == pytest.approx(
+            c["delta_per_contract"] * c["n_contracts"], abs=1e-3
+        )
 
     def test_portfolio_context_has_holdings_list(self):
         from backend.core.explainer.prompt_builder import PromptBuilder

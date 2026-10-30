@@ -1,0 +1,57 @@
+# Anything not excluded here is copied into the image by `COPY backend/`, and
+# an image layer is not a secret store: it can be pulled, exported and
+# inspected by anyone with registry access, and deleting a file in a later
+# layer does not remove it from the earlier one.
+
+# Secrets. backend/.env holds every API key; it was previously copied into the
+# published image.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# The local virtualenv — 412MB of host-specific binaries that would shadow the
+# versions `pip install -r requirements.txt` just resolved.
+.venv/
+venv/
+env/
+
+# Caches and build output
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Not needed at runtime
+.git/
+.github/
+.gitignore
+frontend/
+node_modules/
+.next/
+*.md
+!backend/**/*.md
+
+# Tests do not run in the production image; they are run in CI against
+# backend/requirements.txt.
+backend/tests/
+
+# Scratch / local data
+*.log
+.DS_Store
+
+# The developer's SQLite response cache. Shipping it put 6.4MB of local query
+# history in a published image layer, and because the image copies this tree as
+# root and then runs as uid 10001, the baked-in database was readable but not
+# writable — so a cache hit returned data and a cache miss raised
+# OperationalError. The cache is runtime state; it is created at the writable
+# path resolved in backend/data/data_cache.py, never built into the image.
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal

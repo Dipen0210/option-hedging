@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, field_validator, model_validator
-from typing import Annotated, List, Literal, Optional, Union
+from typing import Annotated, ClassVar, List, Literal, Optional, Union
 from datetime import date
 
 
@@ -112,18 +112,58 @@ class PortfolioInput(BaseModel):
     Phase 2: OptionsPosition → Greek-neutralisation pipeline (stub)
     """
     holdings: List[PositionInput]
-    total_notional: float = Field(..., gt=0)
+
+    # Client-declared portfolio value. OPTIONAL and NOT authoritative: the
+    # server recomputes market value from live prices x quantities (see
+    # backend.data.portfolio_valuation) and overwrites this before the pipeline
+    # runs. A client that derives this from purchase price is reporting cost
+    # basis, which diverged from market value by 52% on the default portfolio
+    # and silently mis-scaled every VaR, stress loss and contract count.
+    total_notional: Optional[float] = Field(default=None, gt=0)
+
     hedge_horizon_days: int = Field(default=180, ge=1, le=730)
     protection_level: float = Field(default=0.15, ge=0.01, le=0.50)
     max_hedge_cost_pct: float = Field(default=0.05, ge=0.005, le=0.20)
     upside_preservation: bool = True
     execution_mode: Literal["analyze", "paper", "live"] = "analyze"
 
+    # Max positions accepted in one request — bounds fan-out of market-data calls.
+    MAX_HOLDINGS: ClassVar[int] = 25
+
     @model_validator(mode="after")
-    def must_have_at_least_one_holding(self) -> "PortfolioInput":
+    def validate_holdings(self) -> "PortfolioInput":
         if not self.holdings:
             raise ValueError("portfolio must have at least one position")
+        if len(self.holdings) > self.MAX_HOLDINGS:
+            raise ValueError(
+                f"portfolio has {len(self.holdings)} positions; "
+                f"maximum supported is {self.MAX_HOLDINGS}"
+            )
+
+        # Reject duplicate stock tickers: two entries for the same underlying
+        # would be hedged twice and double-count the budget.
+        seen: set = set()
+        for h in self.holdings:
+            key = (
+                h.ticker if h.position_type == "stock"
+                else (h.ticker, h.option_type, h.strike, h.expiry)
+            )
+            if key in seen:
+                raise ValueError(f"duplicate position for {h.ticker}; combine them into one entry")
+            seen.add(key)
         return self
+
+    @property
+    def cost_basis(self) -> float:
+        """Sum of what the user paid — not current exposure."""
+        total = 0.0
+        for h in self.holdings:
+            if isinstance(h, StockPosition):
+                total += h.shares * h.purchase_price
+            else:
+                premium = h.premium_paid if h.premium_paid is not None else 0.0
+                total += h.contracts * 100 * premium
+        return total
 
     @property
     def stock_positions(self) -> List[StockPosition]:

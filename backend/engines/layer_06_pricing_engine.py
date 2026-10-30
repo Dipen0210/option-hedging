@@ -45,8 +45,28 @@ def _price_one(
 
 
 def _apply_price_result(candidate: InstrumentCandidate, r: PriceResult) -> None:
-    """Write PriceResult fields back into the candidate in-place."""
-    candidate.total_cost = round(r.price * 100, 2)  # per-contract cost
+    """
+    Write PriceResult fields back into the candidate in-place.
+
+    The theoretical price goes to `model_premium`, never to `total_cost`.
+    This line used to read `total_cost = r.price * 100`, which was wrong three
+    times over: it is one contract's worth regardless of `n_contracts`; it is
+    a model price overwriting the executable market cost L4 had already
+    attached from the live chain; and cost is L7's output, not L6's. The
+    visible effect was a recommendation showing a market bid/ask next to a
+    dollar cost derived from a theoretical premium, with the user's budget
+    enforced against a price they could not trade at.
+    """
+    candidate.model_premium = round(r.price, 4)
+
+    # The quote-vs-model comparison is only meaningful against the model price
+    # that is actually displayed, so it is recomputed here rather than left at
+    # the value L4 derived from its own pre-pricing pass.
+    if candidate.premium_source == "market_mid" and r.price != 0:
+        candidate.premium_vs_model_pct = round(
+            candidate.market_premium / r.price - 1.0, 4
+        )
+
     candidate.delta = r.delta
     candidate.gamma = r.gamma
     candidate.theta = r.theta

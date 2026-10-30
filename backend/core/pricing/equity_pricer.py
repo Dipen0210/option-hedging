@@ -107,9 +107,15 @@ class EquityOptionPricer(BaseAssetPricer):
             g_short = self._price_leg(ticker, S, K_short, r, q, sigma_short, T, short_type)
             net = net_greeks([(g_long, +1), (g_short, -1)])
 
-            net_price = max(net["price"], 0.0)   # spreads are always a debit or zero
+            # The net price is NOT clamped at zero. A bear put spread is a
+            # debit by construction, but a collar can be a net credit, and
+            # flooring that at 0.0 reported a cash inflow as free protection:
+            # the budget gate then saw a costless trade and the user was never
+            # told they would be paid. The selector already rejects a
+            # non-debit spread (see _build_spread_candidates); a credit here
+            # is real and must survive to the sizer with its sign.
             return PriceResult(
-                price=net_price,
+                price=net["price"],
                 delta=net["delta"],
                 gamma=net["gamma"],
                 theta=net["theta"],
@@ -117,6 +123,8 @@ class EquityOptionPricer(BaseAssetPricer):
                 rho=0.0,
                 lambda_leverage=net["lambda_"],
                 model_used=f"{model_suffix}_spread",
+                extended={"hedge_spot": S, "iv_long": sigma_long,
+                          "iv_short": sigma_short},
             )
 
         # ── Single-leg (protective put, OTM put, etc.) ────────────────────────
@@ -131,4 +139,5 @@ class EquityOptionPricer(BaseAssetPricer):
             rho=0.0,
             lambda_leverage=g["lambda_"],
             model_used=model_suffix,
+            extended={"hedge_spot": S, "iv_used": sigma},
         )

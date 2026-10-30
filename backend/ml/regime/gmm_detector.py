@@ -50,6 +50,17 @@ else:
     os.makedirs(MODEL_DIR, exist_ok=True)
 
 
+class InsufficientRegimeData(RuntimeError):
+    """
+    Raised when the macro series needed for regime detection cannot be aligned
+    into enough overlapping observations to fit or score the model.
+
+    Surfacing this instead of letting an empty array reach numpy keeps the
+    failure legible: callers degrade to a disclosed default regime rather than
+    propagating an IndexError to the API.
+    """
+
+
 @dataclass
 class RegimeResult:
     regime_label: str        # "low_vol" | "mid_vol" | "high_vol" | "anomaly"
@@ -78,6 +89,15 @@ class GMMRegimeDetector:
 
     VIX_PERCENTILES         = (40, 75, 90)
     ANOMALY_SCORE_THRESHOLD = 0.70
+    # Enough observations for 20-day rolling features plus a meaningful GMM fit.
+    MIN_TRAINING_SAMPLES    = 120
+    # Head of the series consumed by the 20-day rolling features.
+    FEATURE_WARMUP_BARS     = 25
+    # Approximate trading-day count for each Yahoo range, smallest first.
+    _PERIOD_BARS            = (
+        ("3mo", 63), ("6mo", 126), ("1y", 252),
+        ("2y", 504), ("5y", 1260), ("10y", 2520),
+    )
 
     def __init__(
         self,
@@ -129,26 +149,76 @@ class GMMRegimeDetector:
             close = close.iloc[:, 0]
         return close.squeeze()
 
+    def _required_bars(self) -> int:
+        """Feature rows the configured training window should yield."""
+        return int(round(self.training_years * 252))
+
     def _yf_period(self) -> str:
-        y = self.training_years
-        if y <= 0.25: return "3mo"
-        if y <= 0.5:  return "6mo"
-        if y <= 1.0:  return "1y"
-        if y <= 2.0:  return "2y"
-        if y <= 5.0:  return "5y"
-        return "10y"
+        """
+        Smallest Yahoo range that yields the configured feature window *after*
+        rolling-feature warmup.
+
+        The 20-day rolling features consume the head of the series, so fetching
+        exactly `training_years` of data leaves the window short — the 6-month
+        fast model would end up with ~107 usable rows instead of ~126.
+        """
+        need = self._required_bars() + self.FEATURE_WARMUP_BARS
+        for name, bars in self._PERIOD_BARS:
+            if bars >= need:
+                return name
+        return self._PERIOD_BARS[-1][0]
 
     def _fetch_training_data(self) -> pd.DataFrame:
+        """
+        Aligned macro panel for feature construction.
+
+        Joins through market_data.align_series, which normalizes every index to
+        trade date. Yahoo stamps index products (^VIX, ^VIX3M) at a different
+        UTC hour than equities, so a naive join of these five series produces an
+        empty frame — the defect that took the whole product down.
+        """
+        from backend.data.market_data import align_series
+
         period = self._yf_period()
-        spy   = self._dl_close("SPY",    period)
-        vix   = self._dl_close("^VIX",   period)
-        tlt   = self._dl_close("TLT",    period)
-        hyg   = self._dl_close("HYG",    period)
-        vix3m = self._dl_close("^VIX3M", period)
-        return pd.DataFrame({
-            "spy_close": spy, "vix_level": vix,
-            "tlt_close": tlt, "hyg_close": hyg, "vix3m": vix3m,
-        }).dropna()
+        try:
+            df = align_series(
+                spy_close = self._dl_close("SPY",    period),
+                vix_level = self._dl_close("^VIX",   period),
+                tlt_close = self._dl_close("TLT",    period),
+                hyg_close = self._dl_close("HYG",    period),
+                vix3m     = self._dl_close("^VIX3M", period),
+            )
+        except Exception as exc:
+            raise InsufficientRegimeData(
+                f"[{self.model_prefix}] could not assemble regime inputs: {exc}"
+            ) from exc
+
+        if len(df) < self.MIN_TRAINING_SAMPLES:
+            raise InsufficientRegimeData(
+                f"[{self.model_prefix}] only {len(df)} aligned observations for "
+                f"period={period}; need {self.MIN_TRAINING_SAMPLES}"
+            )
+        return df
+
+    def _prepare_features(self) -> pd.DataFrame:
+        """Fetch and build the feature matrix, validating it is usable."""
+        feat_df = self._build_features(self._fetch_training_data())
+        if feat_df.empty:
+            raise InsufficientRegimeData(
+                f"[{self.model_prefix}] feature matrix empty after dropna"
+            )
+        if len(feat_df) < self.MIN_TRAINING_SAMPLES:
+            raise InsufficientRegimeData(
+                f"[{self.model_prefix}] only {len(feat_df)} usable feature rows; "
+                f"need {self.MIN_TRAINING_SAMPLES}"
+            )
+        if not np.isfinite(feat_df.values).all():
+            raise InsufficientRegimeData(
+                f"[{self.model_prefix}] feature matrix contains non-finite values"
+            )
+        # Trim back to the configured window: the extra history fetched to cover
+        # rolling warmup must not widen the model's effective training period.
+        return feat_df.iloc[-self._required_bars():]
 
     def _build_features(self, df: pd.DataFrame) -> pd.DataFrame:
         feat = pd.DataFrame(index=df.index)
@@ -200,16 +270,24 @@ class GMMRegimeDetector:
 
     # ── Training ──────────────────────────────────────────────────────────────
 
-    def train(self, trigger: str = "manual") -> Dict:
+    def train(self, trigger: str = "manual",
+              feat_df: Optional[pd.DataFrame] = None) -> Dict:
         t_start = time.perf_counter()
         logger.info(
             "[%s] Training started (trigger=%s, window=%.1fy, n_components=%d)",
             self.model_prefix, trigger, self.training_years, self.n_components,
         )
 
-        raw_df  = self._fetch_training_data()
-        feat_df = self._build_features(raw_df)
-        X       = feat_df.values
+        # Callers that already built the feature matrix pass it in so prediction
+        # does not refetch and rebuild the same panel.
+        if feat_df is None:
+            feat_df = self._prepare_features()
+        X = feat_df.values
+        if len(X) < self.MIN_TRAINING_SAMPLES:
+            raise InsufficientRegimeData(
+                f"[{self.model_prefix}] refusing to fit on {len(X)} samples; "
+                f"need {self.MIN_TRAINING_SAMPLES}"
+            )
 
         vix_series = feat_df["vix_level"].values
         p40, p75, p90 = np.percentile(vix_series, list(self.VIX_PERCENTILES))
@@ -268,16 +346,25 @@ class GMMRegimeDetector:
                 trigger: str = "on_demand") -> RegimeResult:
         from backend.ml.regime.training_log import TrainingLog
 
+        # Build the panel once: used to train if needed, then to score today.
+        feat_df = self._prepare_features()
+
         if not self.model_exists() or self.is_stale():
-            summary = self.train(trigger="startup" if not self.model_exists() else "scheduled")
+            summary = self.train(
+                trigger="startup" if not self.model_exists() else "scheduled",
+                feat_df=feat_df,
+            )
             TrainingLog.append(summary)
         else:
             logger.info("[%s] Loading cached model (age=%.1fh)",
                         self.model_prefix, self.model_age_hours())
             self.load()
 
-        raw_df  = self._fetch_training_data()
-        feat_df = self._build_features(raw_df)
+        if self.gmm is None or self.scaler is None:
+            raise InsufficientRegimeData(
+                f"[{self.model_prefix}] model artefacts unavailable after load/train"
+            )
+
         vix_level    = float(feat_df["vix_level"].iloc[-1])
         realized_vol = float(feat_df["realized_vol_20d"].iloc[-1])
         today_scaled = self.scaler.transform(feat_df.iloc[[-1]].values)

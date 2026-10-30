@@ -14,16 +14,25 @@ GET  /admin/earnings/{ticker}         — next earnings date for a ticker
 
 import asyncio
 import logging
-import os
 import time
 from datetime import date
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from backend.api.security import internal_error, require_cron
+
 logger = logging.getLogger(__name__)
+
+# Admin routes. The guard is applied once where this router is mounted
+# (backend/main.py) so a new endpoint added here is protected by default
+# rather than depending on whoever adds it remembering a decorator.
 router = APIRouter()
+
+# Scheduled-retrain routes, kept separate so the cron credential authorises
+# only those two calls and not the whole admin surface.
+cron_router = APIRouter(dependencies=[Depends(require_cron)])
 
 
 # ── Gap 4: Hedge monitor models ───────────────────────────────────────────────
@@ -110,8 +119,7 @@ async def retrain_main():
         TrainingLog.append(summary)
         return {"status": "ok", "summary": summary}
     except Exception as exc:
-        logger.exception("Main model retrain failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc, "main model retrain")
 
 
 @router.post("/retrain/fast")
@@ -125,8 +133,7 @@ async def retrain_fast():
         TrainingLog.append(summary)
         return {"status": "ok", "summary": summary}
     except Exception as exc:
-        logger.exception("Fast model retrain failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc, "fast model retrain")
 
 
 # ── Gap 4: Hedge monitor endpoints ───────────────────────────────────────────
@@ -185,39 +192,31 @@ async def check_hedge_triggers(req: HedgeCheckRequest):
                             else "ok",
         }
     except Exception as exc:
-        logger.exception("Hedge trigger check failed")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc, "hedge trigger check")
 
 
-@router.get("/cron/retrain-fast")
-async def cron_retrain_fast(authorization: Optional[str] = Header(default=None)):
+@cron_router.get("/cron/retrain-fast")
+async def cron_retrain_fast():
     """
     Vercel Cron endpoint — daily fast model retrain.
-    Secured by CRON_SECRET env var when set.
+
+    Requires `Authorization: Bearer $CRON_SECRET`. Enforced by `require_cron`
+    on `cron_router`, which refuses the call when CRON_SECRET is unset instead
+    of allowing an unauthenticated retrain.
     Schedule: 0 2 * * * (02:00 UTC daily)
     """
-    _verify_cron_secret(authorization)
     return await retrain_fast()
 
 
-@router.get("/cron/retrain-main")
-async def cron_retrain_main(authorization: Optional[str] = Header(default=None)):
+@cron_router.get("/cron/retrain-main")
+async def cron_retrain_main():
     """
     Vercel Cron endpoint — monthly main model retrain.
-    Secured by CRON_SECRET env var when set.
+
+    Requires `Authorization: Bearer $CRON_SECRET`; see `cron_retrain_fast`.
     Schedule: 0 2 1 * * (02:00 UTC on the 1st)
     """
-    _verify_cron_secret(authorization)
     return await retrain_main()
-
-
-def _verify_cron_secret(authorization: Optional[str]) -> None:
-    secret = os.environ.get("CRON_SECRET")
-    if not secret:
-        return  # no secret configured — open access
-    expected = f"Bearer {secret}"
-    if authorization != expected:
-        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 @router.get("/earnings/{ticker}")
@@ -235,5 +234,4 @@ async def get_earnings_date(ticker: str):
         ed = await asyncio.to_thread(get_next_earnings_date, ticker.upper())
         return {"ticker": ticker.upper(), "next_earnings": ed}
     except Exception as exc:
-        logger.exception("Earnings date lookup failed for %s", ticker)
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise internal_error(exc, "earnings date lookup")

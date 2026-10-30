@@ -126,6 +126,7 @@ class PromptBuilder:
                 "notional_usd":    round(holding_notional),
                 "beta_vs_spy":     round(risk_profile.beta_vs_spy, 3),
                 "var_5pct_usd":    round(risk_profile.var_5pct),
+                "var_horizon_days": risk_profile.var_horizon_calendar_days,
                 "var_pct":         round(risk_profile.var_pct * 100, 2),
                 "cvar_pct":        round(risk_profile.cvar_pct * 100, 2),
                 "tail_correlation": round(risk_profile.tail_correlation, 3),
@@ -167,6 +168,7 @@ class PromptBuilder:
                 "beta":               round(risk_summary.portfolio_beta, 3),
                 "var_5pct_usd":       round(risk_summary.portfolio_var_5pct),
                 "cvar_5pct_usd":      round(risk_summary.portfolio_cvar_5pct),
+                "var_horizon_days":   risk_summary.var_horizon_calendar_days,
                 "concentration_top1": round(risk_summary.concentration_top1 * 100, 1),
                 "hedge_horizon_days": portfolio.hedge_horizon_days,
                 "max_hedge_cost_pct": round(portfolio.max_hedge_cost_pct * 100, 2),
@@ -250,6 +252,7 @@ class PromptBuilder:
                 "n_holdings":         len(portfolio.holdings),
                 "beta":               round(risk_summary.portfolio_beta, 3),
                 "var_5pct_usd":       round(risk_summary.portfolio_var_5pct),
+                "var_horizon_days":   risk_summary.var_horizon_calendar_days,
                 "top_hedge_per_holding": top_candidates,
             },
         }

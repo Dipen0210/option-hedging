@@ -1,19 +1,54 @@
 """
-Historical VaR and CVaR calculator.
+VaR and CVaR calculator — parametric Cornish-Fisher with an empirical tail.
 
-Improvements over naive historical simulation:
+NAMING: the primary estimator is *parametric*, not historical simulation. It
+takes σ and the higher moments from the sample, then evaluates a closed-form
+adjusted quantile; it does not read a loss off the empirical return
+distribution. The method was previously called `historical_var`, which
+misdescribed it to anyone reading a risk number — it is now
+`parametric_cf_var`, with `historical_var` retained as a deprecated alias so
+existing callers keep working.
+
+Method:
   1. Cornish-Fisher expansion  — adjusts the normal quantile for skewness and
      excess kurtosis in the return distribution (fat-tail correction).
-  2. GARCH vol for horizon scaling — replaces the √T rule (which assumes
-     i.i.d. normal returns) with the forward-looking GARCH vol forecast when
-     available, giving a more accurate multi-horizon estimate.
-  3. Proper CVaR — mean of realised losses beyond the VaR threshold, not a
-     fixed 1.3× multiplier.
+  2. GARCH vol for horizon scaling — replaces the sample std with the
+     forward-looking GARCH vol forecast when available.
+  3. CVaR — mean of realised losses beyond the VaR threshold where enough tail
+     observations exist, else the closed-form normal ES, not a fixed multiplier.
+
+HORIZON CONVENTION: callers pass a hedge horizon in **calendar** days (that is
+what a user picks: "protect me for 180 days"). σ is a **trading-day** quantity,
+so √T scaling must use trading days. Scaling a trading-day σ by √(calendar
+days) overstated 180-day VaR by ~20%. `_trading_days()` does the conversion.
 """
+import logging
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
 from typing import Dict, Optional
+
+from backend.data import data_quality as dq
+
+logger = logging.getLogger(__name__)
+
+TRADING_DAYS_PER_YEAR = 252
+CALENDAR_DAYS_PER_YEAR = 365.25
+
+# Below this many observations the sample moments (especially kurtosis) are not
+# estimable, so Cornish-Fisher cannot be applied.
+MIN_OBS_FOR_MOMENTS = 30
+
+
+def _trading_days(calendar_days: float) -> float:
+    """
+    Convert a calendar-day horizon to trading days.
+
+    σ is measured per trading day, so √T scaling must count trading days.
+    Always returns at least 1 — a sub-one-day horizon still carries one day of
+    risk, and returning <1 would shrink VaR below its single-day floor.
+    """
+    return max(1.0, calendar_days * TRADING_DAYS_PER_YEAR / CALENDAR_DAYS_PER_YEAR)
 
 
 # ── Cornish-Fisher z-score ────────────────────────────────────────────────────
@@ -43,13 +78,14 @@ def _cornish_fisher_z(confidence: float, skew: float, kurt_excess: float) -> flo
 
 class VaRCalculator:
 
-    def historical_var(
+    def parametric_cf_var(
         self,
         returns: pd.Series,
         notional: float,
         confidence: float = 0.95,
         horizon_days: int = 180,
         garch_vol: Optional[float] = None,
+        label: str = "",
     ) -> Dict[str, float]:
         """
         VaR and CVaR with Cornish-Fisher fat-tail correction and GARCH
@@ -58,35 +94,68 @@ class VaRCalculator:
         Method:
           1. Compute skewness + excess kurtosis from the return series.
           2. Derive CF-adjusted 1-day quantile z_CF.
-          3. Estimate 1-day σ: use GARCH forecast if provided, else historical std.
+          3. Estimate 1-day σ: use GARCH forecast if provided, else sample std.
           4. 1-day VaR = σ × z_CF   (parametric, fat-tail adjusted)
-          5. Horizon VaR = VaR_1d × √T  (with GARCH vol this is already better
-             than raw historical √T because σ is forward-looking).
-          6. CVaR = mean of realised losses beyond the VaR threshold.
+          5. Horizon VaR = VaR_1d × √(trading days in the horizon).
+          6. CVaR = mean of realised losses beyond the VaR threshold, else the
+             closed-form normal ES.
 
         Args:
-            returns:     daily log-return series (not percentage)
-            notional:    position value in dollars
-            confidence:  VaR confidence level (default 0.95 → 95% VaR)
-            horizon_days: scaling horizon in calendar days
-            garch_vol:   annualised GARCH vol forecast (optional).
-                         If supplied replaces historical std for σ estimation.
+            returns:      daily log-return series (not percentage)
+            notional:     position value in dollars
+            confidence:   VaR confidence level (default 0.95 → 95% VaR)
+            horizon_days: hedge horizon in CALENDAR days (converted internally)
+            garch_vol:    annualised GARCH vol forecast (optional).
+                          If supplied, replaces sample std for σ estimation.
+            label:        identifier used in data-quality disclosures.
+
+        Returns a dict with var/cvar in dollars and as a fraction of notional,
+        plus `method`, `sigma_source` and `horizon_trading_days` so a caller
+        can tell a fully-estimated number from a fallback one.
         """
-        if len(returns) < 30:
-            # Insufficient history — parametric fallback with 20% vol assumption
-            sigma_1d  = 0.20 / np.sqrt(252)
-            z         = norm.ppf(1 - confidence)
-            var_T_pct = abs(z) * sigma_1d * np.sqrt(horizon_days)
+        horizon_td    = _trading_days(horizon_days)
+        horizon_scale = np.sqrt(horizon_td)
+        who           = f"var:{label}" if label else "var"
+
+        if len(returns) < MIN_OBS_FOR_MOMENTS:
+            # Too few observations to estimate skew/kurtosis. The assumed vol
+            # below is NOT a measurement — it is disclosed as a fallback so the
+            # API can tell the user this VaR is an assumption, not an estimate.
+            assumed_annual_vol = 0.20
+            sigma_1d  = assumed_annual_vol / np.sqrt(TRADING_DAYS_PER_YEAR)
+            z         = abs(norm.ppf(1 - confidence))
+            var_T_pct = z * sigma_1d * horizon_scale
+            # Normal-distribution ES/VaR ratio at this confidence — consistent
+            # with the assumed-normal σ above, instead of an arbitrary 1.25×.
+            es_ratio  = float(norm.pdf(z) / (1 - confidence) / z)
+            logger.warning(
+                "VaR for %s: only %d observations (need %d) — using assumed "
+                "%.0f%% annual vol; this is an assumption, not an estimate",
+                label or "position", len(returns), MIN_OBS_FOR_MOMENTS,
+                assumed_annual_vol * 100,
+            )
+            dq.record(
+                who, dq.SOURCE_FALLBACK,
+                detail=(
+                    f"only {len(returns)} return observations (need "
+                    f"{MIN_OBS_FOR_MOMENTS}); VaR assumes "
+                    f"{assumed_annual_vol:.0%} annual vol"
+                ),
+            )
             return {
                 "var_dollar":  round(var_T_pct * notional, 2),
-                "cvar_dollar": round(var_T_pct * 1.25 * notional, 2),
+                "cvar_dollar": round(var_T_pct * es_ratio * notional, 2),
                 "var_pct":     round(var_T_pct, 6),
-                "cvar_pct":    round(var_T_pct * 1.25, 6),
+                "cvar_pct":    round(var_T_pct * es_ratio, 6),
+                "method":      "assumed_vol_fallback",
+                "sigma_source": f"assumed {assumed_annual_vol:.0%} annual",
+                "horizon_trading_days": round(horizon_td, 2),
+                "n_observations": int(len(returns)),
             }
 
         # ── Step 1: Distribution moments ─────────────────────────────────────
         skew       = float(returns.skew())
-        kurt_excess = float(returns.kurtosis())   # scipy returns excess kurtosis
+        kurt_excess = float(returns.kurtosis())   # pandas: Fisher (excess) kurtosis
 
         # Clip to stable range — very extreme values cause CF to be unreliable
         skew        = float(np.clip(skew,        -3.0, 3.0))
@@ -97,15 +166,25 @@ class VaRCalculator:
 
         # ── Step 3: 1-day sigma ───────────────────────────────────────────────
         if garch_vol and 0.01 < garch_vol < 3.0:
-            sigma_1d = garch_vol / np.sqrt(252)
+            sigma_1d = garch_vol / np.sqrt(TRADING_DAYS_PER_YEAR)
+            sigma_source = "garch_forecast"
         else:
             sigma_1d = float(returns.std())
+            sigma_source = "sample_std"
+            if garch_vol:
+                dq.record(who, dq.SOURCE_FALLBACK,
+                          detail=(f"GARCH vol {garch_vol:.3f} outside plausible "
+                                  f"range; used sample std"))
+
+        if not np.isfinite(sigma_1d) or sigma_1d <= 0:
+            raise ValueError(
+                f"Cannot compute VaR for {label or 'position'}: daily volatility "
+                f"estimate is {sigma_1d!r}"
+            )
 
         # ── Step 4 & 5: Horizon VaR ───────────────────────────────────────────
-        # √T scaling is still used but now with GARCH vol + CF quantile,
-        # which already captures fat-tail risk that plain √T misses.
-        horizon_scale = np.sqrt(horizon_days)
-        var_T_pct     = z_cf * sigma_1d * horizon_scale
+        # σ is per trading day, so √T counts TRADING days, not calendar days.
+        var_T_pct = z_cf * sigma_1d * horizon_scale
 
         # ── Step 6: CVaR — mean of tail losses ───────────────────────────────
         # Use empirical threshold from historical returns scaled to horizon.
@@ -116,10 +195,12 @@ class VaRCalculator:
         if len(tail) >= 5:
             cvar_1d_pct  = float(tail.mean())      # negative mean of tail
             cvar_T_pct   = abs(cvar_1d_pct) * horizon_scale
+            cvar_source  = f"empirical_tail_n{len(tail)}"
         else:
-            # Parametric CVaR for normal: φ(z) / (1−confidence) × σ
+            # Closed-form CVaR for normal: φ(z) / (1−confidence) × σ
             phi_z        = norm.pdf(-z_cf)
             cvar_T_pct   = (phi_z / (1 - confidence)) * sigma_1d * horizon_scale
+            cvar_source  = "normal_closed_form"
 
         # Ensure CVaR ≥ VaR (it always should be by definition)
         cvar_T_pct = max(cvar_T_pct, var_T_pct)
@@ -129,7 +210,17 @@ class VaRCalculator:
             "cvar_dollar": round(cvar_T_pct * notional, 2),
             "var_pct":     round(var_T_pct,  6),
             "cvar_pct":    round(cvar_T_pct, 6),
+            "method":      "parametric_cornish_fisher",
+            "sigma_source": sigma_source,
+            "cvar_source": cvar_source,
+            "horizon_trading_days": round(horizon_td, 2),
+            "n_observations": int(len(returns)),
         }
+
+    # Deprecated alias. The estimator is parametric, not historical simulation;
+    # kept so existing callers and tests keep working.
+    def historical_var(self, *args, **kwargs) -> Dict[str, float]:
+        return self.parametric_cf_var(*args, **kwargs)
 
     def tail_correlation(
         self,
@@ -169,11 +260,12 @@ class VaRCalculator:
     ) -> Dict[str, float]:
         """
         Portfolio-level VaR using weighted return series.
-        Passes garch_vol through to historical_var for consistent scaling.
+        Passes garch_vol through to parametric_cf_var for consistent scaling.
         """
         aligned      = returns_matrix.dropna()
         port_returns = aligned.values @ weights
         port_series  = pd.Series(port_returns, index=aligned.index)
-        return self.historical_var(
-            port_series, notional, confidence, horizon_days, garch_vol=garch_vol
+        return self.parametric_cf_var(
+            port_series, notional, confidence, horizon_days,
+            garch_vol=garch_vol, label="portfolio",
         )

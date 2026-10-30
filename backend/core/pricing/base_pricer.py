@@ -69,7 +69,12 @@ class PriceResult:
     model_used: str = ""
 
     def is_valid(self) -> bool:
-        return math.isfinite(self.price) and self.price >= 0.0
+        """
+        A usable price. Negative is allowed: a collar can be a net credit, and
+        rejecting that sign would discard a structure the user is paid to put
+        on. Only a non-finite price is invalid.
+        """
+        return math.isfinite(self.price)
 
 
 class BaseAssetPricer(ABC):

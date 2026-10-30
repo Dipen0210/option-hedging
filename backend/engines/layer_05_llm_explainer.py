@@ -29,6 +29,7 @@ from typing import Dict, List, Optional
 from backend.core.explainer import get_explainer, PromptBuilder
 from backend.core.explainer.base_explainer import CandidateExplanation
 from backend.models.hedge_models import HedgeOutput, InstrumentCandidate
+from backend.core import disclosures
 from backend.models.risk_models import RegimeState, PortfolioRiskSummary
 from backend.models.portfolio_models import PortfolioInput
 
@@ -57,7 +58,12 @@ class LLMExplainerEngine:
         Enrich HedgeOutput with LLM-generated explanations.
 
         Returns the same HedgeOutput object with explanation fields populated.
-        Never raises — all LLM failures are caught and logged.
+
+        This method has no try/except, so it raises whatever the provider or
+        the parser does — the docstring claimed the opposite for as long as
+        the layer has existed. What makes an LLM failure non-fatal is the
+        orchestrator's own guard around the call, not anything here, and
+        saying otherwise invites a caller to drop that guard.
         """
         if not self.explainer.is_available():
             logger.info(
@@ -138,6 +144,10 @@ def _apply_explanation(
     """
     Merge LLM explanation into InstrumentCandidate in-place.
     Only overwrites fields that the LLM actually filled in (non-empty).
+
+    "Only non-empty" still loses the product's disclosures, because a
+    non-empty `cons` from the model replaces the list those were sitting in.
+    Restored afterwards, same as L11. See backend/core/disclosures.py.
     """
     if exp.when_works_best:
         candidate.when_works_best = exp.when_works_best
@@ -149,3 +159,4 @@ def _apply_explanation(
         candidate.pros = exp.pros
     if exp.cons:
         candidate.cons = exp.cons
+    disclosures.restore(candidate)

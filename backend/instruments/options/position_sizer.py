@@ -13,6 +13,19 @@ import math
 from typing import Dict, List, Optional
 
 
+# Smallest option delta that can carry a hedge. Below this the contract has
+# effectively no exposure to the underlying, so N = target / |Δ| explodes: a
+# SPY put priced off a junk 1.56% implied vol came back with |Δ| ≈ 1e-5 and the
+# sizer asked for 1,500,000 contracts. The old guard was 1e-6, which is a
+# division-by-zero check rather than a statement about what can hedge.
+MIN_HEDGE_DELTA = 0.01
+
+# Smallest per-share premium that can be treated as a real price. A contract
+# quoted below a cent is not protection the user can buy; it signals a bad
+# pricing input, and dividing a budget by it bypasses the budget entirely.
+MIN_PREMIUM_PER_SHARE = 0.01
+
+
 # ── Core sizing ───────────────────────────────────────────────────────────────
 
 def size_by_delta(
@@ -38,7 +51,10 @@ def size_by_delta(
         Integer number of contracts (minimum 1 if > 0).
     """
     abs_delta = abs(option_delta)
-    if abs_delta < 1e-6 or spot_price <= 0:
+    if abs_delta < MIN_HEDGE_DELTA or spot_price <= 0:
+        # Not a usable hedge: a contract with no meaningful delta cannot offset
+        # the position, and sizing against it produces an absurd contract count
+        # rather than a small one.
         return 0
 
     numerator   = abs(asset_beta) * portfolio_notional * hedge_target_pct
@@ -61,7 +77,7 @@ def size_by_var(
     risk they hedge — if so, return 0 and let the selector skip this leg).
     """
     abs_delta = abs(option_delta)
-    if abs_delta < 1e-6 or spot_price <= 0:
+    if abs_delta < MIN_HEDGE_DELTA or spot_price <= 0:
         return 0
 
     n_raw = var_dollar / (abs_delta * contract_size * spot_price)
@@ -101,9 +117,23 @@ def apply_budget_gate(
             budget_used_pct:    total_cost / portfolio_notional
             capped:             True if budget was binding
     """
-    budget_cap    = portfolio_notional * max_cost_pct
-    cost_per_lot  = option_price * contract_size
-    max_contracts = int(budget_cap / cost_per_lot) if cost_per_lot > 0 else n_contracts
+    budget_cap   = portfolio_notional * max_cost_pct
+    cost_per_lot = option_price * contract_size
+
+    if option_price < MIN_PREMIUM_PER_SHARE:
+        # The gate previously fell back to `max_contracts = n_contracts` when
+        # cost_per_lot was 0, which let an unpriced contract through the budget
+        # cap untouched and sized it as if protection were free. An unpriceable
+        # contract is rejected instead.
+        return {
+            "n_contracts_gated": 0,
+            "total_cost":        0.0,
+            "budget_cap":        round(budget_cap, 2),
+            "budget_used_pct":   0.0,
+            "capped":            True,
+        }
+
+    max_contracts = int(budget_cap / cost_per_lot)
 
     n_gated   = min(n_contracts, max_contracts)
     n_gated   = max(n_gated, 0)

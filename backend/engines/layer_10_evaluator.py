@@ -55,8 +55,14 @@ def _cost_score(candidate: InstrumentCandidate, holding_notional: float) -> floa
     efficiency = max_protection / total_cost (higher is better)
     Normalised: sigmoid-like scale capped at 1.0.
     """
-    if candidate.total_cost <= 0:
-        return 0.5  # forward / free instrument — neutral cost
+    if candidate.total_cost < 0:
+        # A net credit: the user is paid to put the structure on. Nothing is
+        # cheaper than being paid, so it takes the top of the cost axis. It
+        # previously fell into the "free instrument" branch below and scored
+        # 0.5, which ranked a financed collar as no better than a future.
+        return 1.0
+    if candidate.total_cost == 0:
+        return 0.5  # forward / no-premium instrument — neutral cost
     if candidate.max_protection <= 0:
         return 0.0
     ratio = candidate.max_protection / candidate.total_cost
@@ -110,11 +116,28 @@ def _greeks_score(candidate: InstrumentCandidate) -> float:
 
 
 def _basis_score(candidate: InstrumentCandidate) -> float:
-    """R² of hedge vs asset. Higher = lower basis risk."""
-    r2 = candidate.basis_risk_r2
-    if r2 <= 0:
-        return 0.5   # unknown basis — neutral
-    return min(r2, 1.0)
+    """
+    R² of hedge vs asset. Higher = lower basis risk.
+
+    `basis_risk_r2` holds 0.0 both for a hedge measured as tracking almost
+    nothing and for one never measured at all, so this used to return 0.5 for
+    either — reinstating at the scoring step exactly the neutral placeholder
+    L3 removed for not being neutral (see the comment in
+    layer_03_risk_analysis). At a 15% weight that scored an unmeasurable hedge
+    above one honestly measured as weak, biasing the ranking toward the
+    candidates we know least about.
+
+    `basis_risk_source` separates the two cases. An unmeasured basis scores 0
+    because nothing establishes that the hedge tracks the asset; a measured
+    one scores what it measured, however poor.
+    """
+    source = (candidate.basis_risk_source or "").strip()
+    if source == "identity":
+        # Same underlying: R²=1 is definitional, not an estimate.
+        return 1.0
+    if not source:
+        return 0.0
+    return min(max(candidate.basis_risk_r2, 0.0), 1.0)
 
 
 def _regime_score(candidate: InstrumentCandidate, regime: RegimeState) -> float:
@@ -220,4 +243,103 @@ class EvaluatorEngine:
 
         elapsed = time.perf_counter() - t0
         logger.info("L10 EvaluatorEngine: scored %d candidates in %.3fs", n_scored, elapsed)
+        return hedge_output
+
+    # ── Portfolio-level budget enforcement ────────────────────────────────────
+
+    def enforce_portfolio_budget(
+        self,
+        hedge_output: HedgeOutput,
+        max_hedge_cost_pct: float,
+    ) -> HedgeOutput:
+        """
+        Check the recommended hedge set against the user's budget, and record
+        what it costs.
+
+        L4 and L7 each gate a holding against a pro-rata share of the budget
+        (`OptionsSelector._holding_budget_pct`), so the sum over holdings is
+        bounded by the cap whenever the holding values add up to the portfolio
+        value. Nothing verified that, and nothing added the costs up: the
+        response carried a dollar figure per candidate and no portfolio total,
+        which is the one number that answers "can I afford this?".
+
+        The selected set is the top-scoring candidate per holding — the same
+        set L12 aggregates the hedge Greeks over. A candidate whose inclusion
+        would push that set past the cap is removed, because recommending it
+        would breach a constraint the user set; the holding falls back to its
+        best affordable alternative, or to none with a warning. Holdings are
+        walked most-expensive-first so that one large position cannot consume
+        the budget and leave every smaller one unhedged.
+
+        A net credit (a financed collar) reduces the running total, which is
+        correct: being paid to put a structure on does not consume budget.
+        """
+        budget = max(hedge_output.portfolio_notional, 0.0) * max_hedge_cost_pct
+        hedge_output.hedge_budget_total = round(budget, 2)
+
+        # Rank each holding's candidates the way L12 will, so "top pick" here
+        # means the same thing it will mean in the response.
+        ranked: Dict[str, List[InstrumentCandidate]] = {}
+        for rec in hedge_output.recommendations:
+            ranked[rec.asset_ticker] = sorted(
+                rec.candidates,
+                key=lambda c: (c.score, c.efficiency_ratio),
+                reverse=True,
+            )
+
+        order = sorted(
+            hedge_output.recommendations,
+            key=lambda r: -(ranked[r.asset_ticker][0].total_cost
+                            if ranked[r.asset_ticker] else 0.0),
+        )
+
+        spent = 0.0
+        for rec in order:
+            cands = ranked[rec.asset_ticker]
+            if not cands:
+                continue
+
+            remaining = budget - spent
+            affordable = [c for c in cands if c.total_cost <= remaining]
+
+            if len(affordable) == len(cands):
+                spent += cands[0].total_cost
+                continue
+
+            if affordable:
+                dropped = len(cands) - len(affordable)
+                logger.info(
+                    "L10: %d candidate(s) for %s exceed the remaining "
+                    "portfolio budget ($%.2f) and were removed",
+                    dropped, rec.asset_ticker, remaining,
+                )
+                hedge_output.warnings.append(
+                    f"{dropped} hedge option(s) for {rec.asset_ticker} were "
+                    f"excluded: they cost more than the ${remaining:,.0f} left "
+                    f"of your ${budget:,.0f} hedge budget."
+                )
+                rec.candidates = affordable
+                spent += affordable[0].total_cost
+            else:
+                logger.info(
+                    "L10: no candidate for %s fits the remaining portfolio "
+                    "budget ($%.2f); holding left unhedged",
+                    rec.asset_ticker, remaining,
+                )
+                hedge_output.warnings.append(
+                    f"No hedge for {rec.asset_ticker} fits the ${remaining:,.0f} "
+                    f"left of your ${budget:,.0f} hedge budget; the position is "
+                    f"shown unhedged."
+                )
+                rec.candidates = []
+
+        hedge_output.hedge_portfolio_cost = round(spent, 2)
+        hedge_output.hedge_budget_utilization = (
+            round(spent / budget, 4) if budget > 0 else 0.0
+        )
+        logger.info(
+            "L10 portfolio budget: $%.2f of $%.2f (%.1f%%)",
+            spent, budget,
+            (spent / budget * 100) if budget > 0 else 0.0,
+        )
         return hedge_output

@@ -59,16 +59,119 @@ def test_var_basic():
     assert 0 < result["var_pct"] < 1
 
 
-def test_var_scales_with_horizon():
-    from backend.core.risk.var_calculator import VaRCalculator
+def test_var_scales_with_sqrt_of_TRADING_days_not_calendar_days():
+    """
+    Regression: horizon_days is CALENDAR days but sigma is a TRADING-day
+    quantity. Scaling by sqrt(calendar days) overstated 180-day VaR by ~20%.
+    """
+    from backend.core.risk.var_calculator import VaRCalculator, _trading_days
     np.random.seed(1)
     returns = pd.Series(np.random.normal(0, 0.01, 500))
     calc = VaRCalculator()
-    r1  = calc.historical_var(returns, 100_000, horizon_days=1)
-    r20 = calc.historical_var(returns, 100_000, horizon_days=20)
-    # VaR_20 should be ~sqrt(20) times VaR_1
-    ratio = r20["var_dollar"] / r1["var_dollar"]
-    assert abs(ratio - np.sqrt(20)) < 1.5  # allow some tolerance
+
+    r1   = calc.parametric_cf_var(returns, 100_000, horizon_days=1)
+    r180 = calc.parametric_cf_var(returns, 100_000, horizon_days=180)
+
+    # Both horizons share the same sigma and z_CF, so the ratio is exactly
+    # the ratio of the sqrt horizon scales.
+    expected = np.sqrt(_trading_days(180) / _trading_days(1))
+    ratio = r180["var_dollar"] / r1["var_dollar"]
+    assert ratio == pytest.approx(expected, rel=1e-3)
+
+    # And it must NOT be the calendar-day figure.
+    assert ratio < np.sqrt(180) * 0.9
+
+    # The conversion itself, and that it is reported to the caller.
+    assert r180["horizon_trading_days"] == pytest.approx(124.19, abs=0.05)
+    assert r1["horizon_trading_days"] == 1.0   # floored, never below one day
+
+
+def test_var_reports_its_own_method_and_sigma_source():
+    """A risk number must say how it was produced."""
+    from backend.core.risk.var_calculator import VaRCalculator
+    np.random.seed(3)
+    returns = pd.Series(np.random.normal(0, 0.011, 400))
+    calc = VaRCalculator()
+
+    sample = calc.parametric_cf_var(returns, 100_000, horizon_days=90)
+    assert sample["method"] == "parametric_cornish_fisher"
+    assert sample["sigma_source"] == "sample_std"
+    assert sample["n_observations"] == 400
+
+    garch = calc.parametric_cf_var(returns, 100_000, horizon_days=90, garch_vol=0.22)
+    assert garch["sigma_source"] == "garch_forecast"
+    # A higher forward-looking vol than the sample must raise VaR.
+    assert garch["var_dollar"] > sample["var_dollar"]
+
+
+def test_implausible_garch_vol_falls_back_to_sample_std_and_discloses():
+    from backend.core.risk.var_calculator import VaRCalculator
+    from backend.data import data_quality as dq
+    np.random.seed(5)
+    returns = pd.Series(np.random.normal(0, 0.01, 300))
+    calc = VaRCalculator()
+
+    with dq.capture() as log:
+        res = calc.parametric_cf_var(returns, 100_000, horizon_days=90,
+                                     garch_vol=42.0, label="SPY")
+    assert res["sigma_source"] == "sample_std"
+    assert log.summary()["is_degraded"] is True
+    assert any("GARCH" in w for w in log.summary()["warnings"])
+
+
+def test_short_history_var_is_disclosed_as_an_assumption():
+    """
+    Regression: <30 observations silently returned a VaR built on a hardcoded
+    20% vol, indistinguishable from a measured estimate.
+    """
+    from backend.core.risk.var_calculator import VaRCalculator
+    from backend.data import data_quality as dq
+    np.random.seed(11)
+    returns = pd.Series(np.random.normal(0, 0.01, 12))
+    calc = VaRCalculator()
+
+    with dq.capture() as log:
+        res = calc.parametric_cf_var(returns, 100_000, horizon_days=180, label="IPO")
+
+    assert res["method"] == "assumed_vol_fallback"
+    assert "assumed" in res["sigma_source"]
+    assert res["n_observations"] == 12
+    assert log.summary()["is_degraded"] is True
+    # Warnings are grouped by condition, so the field and the subject are
+    # named separately ("var: using fallback (IPO) — ...").
+    assert any("var" in w and "IPO" in w for w in log.summary()["warnings"])
+    # Still uses the trading-day horizon, like the main path.
+    assert res["horizon_trading_days"] == pytest.approx(124.19, abs=0.05)
+
+
+def test_cvar_is_never_below_var_and_names_its_source():
+    from backend.core.risk.var_calculator import VaRCalculator
+    np.random.seed(13)
+    # Left-skewed, fat-tailed returns: the empirical tail path should engage.
+    returns = pd.Series(np.random.standard_t(4, 600) * 0.008)
+    calc = VaRCalculator()
+    res = calc.parametric_cf_var(returns, 500_000, horizon_days=60)
+    assert res["cvar_dollar"] >= res["var_dollar"]
+    assert res["cvar_source"].startswith("empirical_tail_")
+
+
+def test_zero_volatility_series_raises_rather_than_returning_zero_var():
+    """A flat series cannot yield a defensible VaR — it must not report $0 risk."""
+    from backend.core.risk.var_calculator import VaRCalculator
+    calc = VaRCalculator()
+    returns = pd.Series([0.0] * 100)
+    with pytest.raises(ValueError, match="volatility"):
+        calc.parametric_cf_var(returns, 100_000, horizon_days=180, label="FLAT")
+
+
+def test_historical_var_alias_still_works():
+    """Deprecated alias retained for existing callers."""
+    from backend.core.risk.var_calculator import VaRCalculator
+    np.random.seed(17)
+    returns = pd.Series(np.random.normal(0, 0.01, 200))
+    calc = VaRCalculator()
+    assert (calc.historical_var(returns, 100_000, horizon_days=30)
+            == calc.parametric_cf_var(returns, 100_000, horizon_days=30))
 
 
 def test_tail_correlation_higher_in_crash():

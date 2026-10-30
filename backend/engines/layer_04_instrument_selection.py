@@ -23,6 +23,8 @@ from backend.models.portfolio_models import PortfolioInput
 from backend.models.risk_models import RegimeState, PortfolioRiskSummary
 from backend.models.hedge_models import HedgeOutput, HedgeRecommendation, InstrumentCandidate
 from backend.instruments import ALL_SELECTORS
+from backend.instruments.options.selector import is_executably_quoted
+from backend.data import data_quality as dq
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +61,35 @@ class InstrumentSelectionEngine:
         """
         t0 = time.perf_counter()
         recommendations: List[HedgeRecommendation] = []
+        warnings: List[str] = []
 
         # Iterate all risk profiles (stocks + option positions) directly
         for i, profile in enumerate(risk_summary.risk_profiles):
             ticker = profile.ticker
+
+            # A profile L3 could not measure carries placeholder risk figures,
+            # not risk. Sizing a hedge off them produces a contract count, a
+            # premium and a risk-reduction estimate that look exactly like the
+            # real ones and are derived from nothing, so the holding is
+            # reported as unhedgeable instead.
+            if not getattr(profile, "data_available", True):
+                reason = getattr(profile, "unavailable_reason", "") or "risk analysis failed"
+                logger.warning(
+                    "L4: no recommendation for %s — risk profile unavailable (%s)",
+                    ticker, reason,
+                )
+                warnings.append(
+                    f"{ticker}: no hedge could be recommended because its risk could "
+                    f"not be analysed ({reason}). This holding is unhedged and its "
+                    f"risk is not included in the portfolio figures."
+                )
+                recommendations.append(HedgeRecommendation(
+                    rank=i + 1,
+                    asset_ticker=ticker,
+                    candidates=[],
+                ))
+                continue
+
             logger.info(f"Selecting instruments for {ticker} ({profile.asset_class})...")
             candidates = self._select_for_holding(profile, portfolio, regime)
 
@@ -75,6 +102,10 @@ class InstrumentSelectionEngine:
                 candidates=candidates,
             ))
 
+        # Whether an unquoted hedge may still be offered depends on something
+        # no single holding can see. Decided here, across the whole run.
+        self._refuse_unquotable_hedges(recommendations, warnings)
+
         elapsed = round(time.perf_counter() - t0, 3)
         logger.info(f"Instrument selection done in {elapsed}s — "
                     f"{sum(len(r.candidates) for r in recommendations)} total candidates")
@@ -84,9 +115,100 @@ class InstrumentSelectionEngine:
             regime=regime.regime_label,
             is_anomaly=regime.is_anomaly,
             vix_level=regime.vix_level,
+            # The label alone hides whether the GMM produced it or the VIX
+            # fallback did; L2 knows, and the response has to say so.
+            regime_source=regime.regime_source,
+            regime_degraded=regime.degraded,
+            regime_degradation_reason=regime.degradation_reason,
             recommendations=recommendations,
             run_time_seconds=elapsed,
+            warnings=warnings,
         )
+
+    @staticmethod
+    def _refuse_unquotable_hedges(
+        recommendations: List[HedgeRecommendation],
+        warnings: List[str],
+    ) -> None:
+        """
+        Withhold a hedge for a holding whose contracts have no tradeable
+        market, while the market is demonstrably open.
+
+        The selector, finding nothing quotable for a holding, keeps the
+        candidates and discloses that their premiums are theoretical. That is
+        right for one reason and wrong for the other, and until now the two
+        were indistinguishable:
+
+          * The provider publishes no quotes at all right now — outside
+            market hours, on a holiday, or during an outage. The contracts
+            are real and listed; the user is researching a hedge they would
+            place when the market opens. Withholding everything would make
+            the product useless for two thirds of the day, so a disclosed
+            theoretical premium is the honest and useful answer.
+
+          * The market is open and quoting, and *this* instrument still has
+            no two-sided market. Then there is no hedge to recommend. Ranking
+            a model premium here invites the user to work out a position in a
+            contract nobody will fill, which is the "forced recommendation"
+            the brief prohibits.
+
+        Telling them apart needs no market calendar, which is the point: a
+        calendar would have to be maintained and would refuse hedges wrongly
+        on every holiday it missed. The run answers the question itself. If
+        any instrument anywhere in this run carries an executable quote, the
+        venue is open and quoting, so a holding with none has no market. If
+        nothing is quoted anywhere, the provider is silent and nothing can be
+        concluded about any single contract.
+
+        The asymmetry is deliberate. A missed refusal leaves a disclosed
+        theoretical premium on screen; a wrong refusal silently removes a
+        hedge the user could have placed. So the refusal fires only on
+        positive evidence that quoting works right now.
+        """
+        quoted_anywhere = any(
+            is_executably_quoted(c)
+            for rec in recommendations
+            for c in rec.candidates
+        )
+        if not quoted_anywhere:
+            logger.info(
+                "L4: no executable quote anywhere in this run — treating the "
+                "venue as not quoting, so theoretical premiums stand with "
+                "their disclosure rather than being refused",
+            )
+            return
+
+        for rec in recommendations:
+            if not rec.candidates:
+                continue
+            if any(is_executably_quoted(c) for c in rec.candidates):
+                continue
+
+            n = len(rec.candidates)
+            logger.warning(
+                "L4: withholding %d candidate(s) for %s — none has an "
+                "executable two-sided quote while other instruments in this "
+                "run are quoting normally",
+                n, rec.asset_ticker,
+            )
+            rec.candidates = []
+            warnings.append(
+                f"{rec.asset_ticker}: no hedge is recommended. None of the "
+                f"{n} contract(s) considered has a tradeable two-sided quote, "
+                f"while other instruments priced in this same run are quoting "
+                f"normally — so this is an absent market for these contracts, "
+                f"not a closed one. A premium could only be a model estimate, "
+                f"and a position sized from it could not be filled. The "
+                f"holding is shown unhedged."
+            )
+            dq.record(
+                f"no_market:{rec.asset_ticker}", dq.SOURCE_UNAVAILABLE,
+                detail=(
+                    f"{rec.asset_ticker}: hedge withheld — no executable "
+                    f"two-sided quote on any candidate contract while the "
+                    f"venue is quoting"
+                ),
+            )
 
     def _select_for_holding(
         self,

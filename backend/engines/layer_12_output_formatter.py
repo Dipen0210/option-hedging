@@ -18,7 +18,13 @@ import logging
 import time
 from typing import Dict, List, Optional
 
-from backend.models.hedge_models import HedgeOutput, HedgeRecommendation, InstrumentCandidate, UnhedgedRisk
+from backend.models.hedge_models import (
+    HedgeOutput,
+    HedgeRecommendation,
+    InstrumentCandidate,
+    RiskEstimateProvenance,
+    UnhedgedRisk,
+)
 from backend.models.risk_models import PortfolioRiskSummary
 
 logger = logging.getLogger(__name__)
@@ -87,10 +93,31 @@ class OutputFormatterEngine:
                         notional          = round(notional, 2),
                         var_95            = round(profile.var_5pct, 2),
                         cvar_95           = round(profile.cvar_5pct, 2),
+                        horizon_calendar_days = profile.var_horizon_calendar_days,
+                        horizon_trading_days  = profile.var_horizon_trading_days,
                         var_pct           = round(profile.var_pct, 4),
                         beta              = round(beta, 3),
                         stress_loss_10pct = round(notional * beta * 0.10, 2),
                         stress_loss_20pct = round(notional * beta * 0.20, 2),
+                    )
+                    # The profile's provenance, carried out with the figures it
+                    # qualifies. L3 measures all of this and L12 used to drop
+                    # it, so the response stated a beta and a VaR without ever
+                    # saying what they were fitted on.
+                    rec.risk_provenance = RiskEstimateProvenance(
+                        data_available      = profile.data_available,
+                        unavailable_reason  = profile.unavailable_reason,
+                        beta_available      = profile.beta_available,
+                        beta_r2             = profile.beta_r2,
+                        beta_stderr         = profile.beta_stderr,
+                        beta_n_obs          = profile.beta_n_obs,
+                        var_method          = profile.var_method,
+                        var_sigma_source    = profile.var_sigma_source,
+                        var_n_obs           = profile.var_n_obs,
+                        hedge_ratio_r2      = profile.hedge_ratio_r2,
+                        hedge_ratio_stderr  = profile.hedge_ratio_stderr,
+                        hedge_ratio_n_obs   = profile.hedge_ratio_n_obs,
+                        factors_unavailable = profile.factors_unavailable,
                     )
 
         # ── 5. Aggregate portfolio-level hedge Greeks (top candidate per holding)

@@ -26,10 +26,30 @@ logger = logging.getLogger(__name__)
 _MAX_WORKERS = 16
 
 
+def executable_premium(candidate: InstrumentCandidate) -> float:
+    """
+    The per-share price the user would actually transact at.
+
+    Positive is a debit, negative a credit. When the chain gave a two-sided
+    quote this is the market mid, because that is what the trade costs; only
+    without one does the theoretical price stand in, and `premium_source`
+    already tells the user which they are looking at.
+
+    Sizing and cost must both come from this number. The premium was
+    previously recovered as `candidate.total_cost / 100`, which after L6 was
+    the model price for a single contract — so a candidate displaying a live
+    bid/ask was sized and costed off the model, and the budget the user set
+    was enforced against a price that did not exist in the market.
+    """
+    if candidate.premium_source == "market_mid" and candidate.market_premium:
+        return candidate.market_premium
+    return candidate.model_premium
+
+
 def _build_price_result(candidate: InstrumentCandidate) -> PriceResult:
     """Reconstruct a PriceResult from a priced candidate (post-L6)."""
     return PriceResult(
-        price=candidate.total_cost / 100 if candidate.total_cost > 0 else 0.0,
+        price=executable_premium(candidate),
         delta=candidate.delta,
         gamma=candidate.gamma,
         theta=candidate.theta,
@@ -63,6 +83,11 @@ def _size_one(
 def _apply_sizing_result(candidate: InstrumentCandidate, r: SizingResult) -> None:
     candidate.n_contracts = r.n_contracts
     candidate.total_cost = round(r.total_cost, 2)
+    # market_total_cost is quoted alongside total_cost in the API response, so
+    # it has to follow the contract count L7 settled on. Leaving it at L4's
+    # pre-sizing figure made the two disagree on the same screen.
+    if candidate.premium_source == "market_mid":
+        candidate.market_total_cost = candidate.total_cost
     candidate.max_protection = round(r.notional_hedged, 2)
     candidate.partial_hedge_options = r.partial_hedge_options
     candidate.extended_metrics["hedge_effectiveness"] = round(r.hedge_effectiveness, 4)

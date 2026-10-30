@@ -6,7 +6,7 @@ Single entry point:
 
 Layer execution order:
   L1  InputParser          — validate & normalise PortfolioInput
-  L2  MarketContextEngine  — regime detection (HDBSCAN + GARCH)
+  L2  MarketContextEngine  — regime detection (GMM main+fast fusion + GARCH)
   L3  RiskAnalysisEngine   — per-holding beta, VaR, hedge ratios
   L4  InstrumentSelection  — rule-based candidate generation
   L5  LLMExplainerEngine   — preliminary explanations (pre-pricing)
@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from backend.models.portfolio_models import PortfolioInput, StockPosition
 from backend.models.hedge_models import HedgeOutput
 from backend.models.risk_models import RegimeState, PortfolioRiskSummary
+from backend.data import data_quality as dq
 
 # L1: Input validation (pass-through — PortfolioInput is already a Pydantic model)
 # L2
@@ -58,6 +59,17 @@ from backend.engines.layer_11_llm_explainer import FinalLLMExplainerEngine
 from backend.engines.layer_12_output_formatter import OutputFormatterEngine
 
 logger = logging.getLogger(__name__)
+
+
+def _dedupe(items: List[str]) -> List[str]:
+    """Drop repeated warnings while keeping first-seen order."""
+    seen: set[str] = set()
+    out: List[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
 
 
 class HedgeOrchestrator:
@@ -129,6 +141,22 @@ class HedgeOrchestrator:
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _risk_free_rate(market_data: Dict[str, Any]) -> float:
+        """
+        Risk-free rate for discounting. The API route fetches this live; if it
+        is absent the substitution is disclosed rather than hidden behind a
+        hardcoded literal that looks like a real quote.
+        """
+        from backend.data.market_data import FALLBACK_RISK_FREE_RATE
+
+        rate = market_data.get("_global", {}).get("risk_free_rate")
+        if rate is None:
+            dq.record("risk_free_rate", dq.SOURCE_FALLBACK,
+                      detail=f"not supplied to pipeline; using {FALLBACK_RISK_FREE_RATE:.3f}")
+            return FALLBACK_RISK_FREE_RATE
+        return rate
+
     def _build_pricing_ctx(
         self, portfolio: PortfolioInput, market_data: Dict[str, Any], regime: RegimeState
     ) -> PricingContext:
@@ -145,7 +173,7 @@ class HedgeOrchestrator:
         }
         return PricingEngine.build_context(
             spot_prices=spot_prices,
-            risk_free_rate=g.get("risk_free_rate", 0.053),
+            risk_free_rate=self._risk_free_rate(market_data),
             regime_vol=regime.vol_forecast_garch,
             vix_level=regime.vix_level,
             vol_overrides=vol_overrides,
@@ -155,6 +183,34 @@ class HedgeOrchestrator:
             futures_prices=g.get("futures_prices", {}),
             credit_spreads=g.get("credit_spreads", {}),
         )
+
+    @staticmethod
+    def _drop_unsizeable(hedge_output: HedgeOutput) -> None:
+        """
+        Remove candidates L7 could not size, and say so when a holding is left
+        with nothing.
+
+        A zero-contract candidate is not a trade: it means the budget could
+        not afford one lot, the delta was too small to hedge with, or the
+        contract had no usable price. The sizer used to round such a case up
+        to a single contract so that something always appeared on screen,
+        which is how a recommendation could breach the budget it was given.
+        Showing fewer options — or none — is the honest result.
+        """
+        for rec in hedge_output.recommendations:
+            kept = [c for c in rec.candidates if c.n_contracts > 0]
+            dropped = len(rec.candidates) - len(kept)
+            if dropped:
+                logger.info(
+                    "L7: dropped %d unsizeable candidate(s) for %s",
+                    dropped, rec.asset_ticker,
+                )
+            rec.candidates = kept
+            if not kept:
+                hedge_output.warnings.append(
+                    f"No hedge for {rec.asset_ticker} fits the cost budget and "
+                    f"liquidity constraints; the position is shown unhedged."
+                )
 
     def _build_sizing_contexts(
         self,
@@ -179,7 +235,12 @@ class HedgeOrchestrator:
                 portfolio_notional=portfolio.total_notional,
                 holding_notional=notional,
                 beta=rp.beta_vs_spy if rp else 1.0,
-                hedge_ratio=1.0,
+                # The fraction of the exposure the user asked to cover. This
+                # was hardcoded to 1.0, so L7 sized every hedge for full
+                # coverage and then let the budget cap decide the count — the
+                # protection level the user chose had no effect on the
+                # recommendation they were given.
+                hedge_ratio=portfolio.protection_level,
                 max_premium_pct=portfolio.max_hedge_cost_pct,
                 correlation=rp.optimal_hedge_ratio if rp else 0.85,
                 spot_vol=sigma,
@@ -274,6 +335,36 @@ class HedgeOrchestrator:
                     result[ticker_key] = rp.notional_value
         return result
 
+    def _reconcile_valuation(
+        self, portfolio: PortfolioInput, market_data: Dict[str, Any]
+    ):
+        """
+        Recompute portfolio market value from live prices and make it the
+        authoritative notional for every downstream layer.
+
+        The client's `total_notional` is advisory only: a UI that derives it
+        from purchase price is reporting cost basis. On the default portfolio
+        that understated current exposure by 52%, which mis-scaled VaR, stress
+        losses, hedge ratios and contract counts. Overwriting the field here
+        means all 12 layers inherit the corrected base without per-layer edits.
+        """
+        from backend.data.portfolio_valuation import value_portfolio
+
+        spot_prices = {
+            ticker: md["spot_price"]
+            for ticker, md in market_data.items()
+            if ticker != "_global" and isinstance(md, dict) and "spot_price" in md
+        }
+        valuation = value_portfolio(portfolio, spot_prices=spot_prices)
+        portfolio.total_notional = valuation.market_value
+        logger.info(
+            "Valuation: market_value=$%.0f cost_basis=$%.0f (declared=%s)",
+            valuation.market_value,
+            valuation.cost_basis,
+            f"${valuation.declared_notional:,.0f}" if valuation.declared_notional else "none",
+        )
+        return valuation
+
     # ── main entry point ──────────────────────────────────────────────────────
 
     def run(
@@ -284,10 +375,43 @@ class HedgeOrchestrator:
         """
         Execute the full 12-layer pipeline.
 
+        Opens (or joins) a data-quality ledger so every number in the result
+        carries its source, and stamps the provenance onto the output. Callers
+        must not treat an empty `data_quality` as "everything was live".
+
         Returns:
             HedgeOutput — fully priced, sized, Greeks-computed,
                           simulated, scored, explained, and formatted.
         """
+        with dq.capture(reuse=True) as ledger:
+            valuation = self._reconcile_valuation(portfolio, market_data)
+            output = self._run_pipeline(portfolio, market_data)
+
+            output.portfolio_cost_basis     = valuation.cost_basis
+            output.portfolio_unrealized_pnl = valuation.unrealized_pnl
+            output.declared_notional        = valuation.declared_notional
+            output.data_quality             = ledger.summary()
+
+            # Assignment, not extension, used to be the bug here: every
+            # warning raised *inside* the pipeline — a holding left unhedged
+            # because nothing fit the budget (L7), candidates excluded for
+            # breaching the portfolio cap (L10) — was overwritten by this line
+            # and never reached the response. Those are precisely the
+            # disclosures a user needs, so pipeline warnings are preserved and
+            # ordered: valuation first (it reframes every figure below it),
+            # then the pipeline's own, then data provenance.
+            output.warnings = _dedupe(
+                list(valuation.warnings)
+                + list(output.warnings)
+                + list(output.data_quality.get("warnings", []))
+            )
+            return output
+
+    def _run_pipeline(
+        self,
+        portfolio: PortfolioInput,
+        market_data: Dict[str, Any],
+    ) -> HedgeOutput:
         pipeline_start = time.perf_counter()
         logger.info(
             "Pipeline start: %d holdings, notional=$%.0f",
@@ -322,6 +446,16 @@ class HedgeOrchestrator:
         # ── L4: Instrument selection ──────────────────────────────────────────
         logger.info("L4: Selecting hedge candidates...")
         hedge_output: HedgeOutput = self._l4.select(portfolio, regime, risk_summary)
+
+        # A regime that came from the VIX fallback rather than the GMM changes
+        # the regime-fit score of every candidate below. Say so in the
+        # response instead of only in the server log.
+        if hedge_output.regime_degraded:
+            hedge_output.warnings.append(
+                f"Regime detection is degraded ({hedge_output.regime_source}): "
+                f"{hedge_output.regime_degradation_reason} "
+                f"Regime-dependent scores are less reliable than usual."
+            )
         total_candidates = sum(len(r.candidates) for r in hedge_output.recommendations)
         logger.info("L4: %d candidates across %d holdings",
                     total_candidates, len(hedge_output.recommendations))
@@ -349,6 +483,7 @@ class HedgeOrchestrator:
         # ── L7: Position sizing ───────────────────────────────────────────────
         logger.info("L7: Sizing positions...")
         hedge_output = self._l7.run(hedge_output, sizing_ctxs)
+        self._drop_unsizeable(hedge_output)
 
         # ── L8: Greeks ────────────────────────────────────────────────────────
         logger.info("L8: Computing portfolio Greeks...")
@@ -361,7 +496,7 @@ class HedgeOrchestrator:
                 hedge_output = self._l9.run(
                     hedge_output,
                     market_data=market_data,
-                    risk_free_rate=market_data.get("_global", {}).get("risk_free_rate", 0.053),
+                    risk_free_rate=self._risk_free_rate(market_data),
                     hedge_horizon_days=portfolio.hedge_horizon_days,
                 )
             except Exception as exc:
@@ -370,6 +505,12 @@ class HedgeOrchestrator:
         # ── L10: Scoring ──────────────────────────────────────────────────────
         logger.info("L10: Scoring candidates...")
         hedge_output = self._l10.run(hedge_output, regime, holding_notionals)
+        # The per-holding gates bound each hedge against a pro-rata share of
+        # the budget; this adds the selected set up and enforces the cap on the
+        # total, which nothing did before.
+        hedge_output = self._l10.enforce_portfolio_budget(
+            hedge_output, portfolio.max_hedge_cost_pct
+        )
 
         # ── L11: Final LLM explanation (optional) ─────────────────────────────
         if self.run_l11_llm:
@@ -415,7 +556,7 @@ class HedgeOrchestrator:
         logger.info("Options-position hedging requested — Phase 2 stub.")
         elapsed = round(time.perf_counter() - pipeline_start, 3)
         return HedgeOutput(
-            portfolio_notional=portfolio.total_notional,
+            portfolio_notional=portfolio.total_notional or 0.0,
             regime="unknown",
             is_anomaly=False,
             vix_level=0.0,
