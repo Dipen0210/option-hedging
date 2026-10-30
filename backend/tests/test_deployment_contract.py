@@ -24,10 +24,17 @@ several minutes an image build costs, so the suite checks the only thing it can
 check cheaply and on every run — that the configuration is consistent with the
 code that has to run against it. A missing pin is fully detectable from here.
 
-What these tests therefore do *not* do is prove the image builds or runs. That
-is a separate, out-of-band verification against a real build; its result is
-recorded in REPAIR_REPORT.md. Treating a green run of this file as evidence
-that the container works would be the same mistake in a new place.
+What these tests therefore do *not* do is prove the image builds or runs.
+Treating a green run of this file as evidence that the container works would be
+the same mistake in a new place — and that is not hypothetical: every test here
+passed while the image was unbuildable from a clean checkout, because the only
+build anyone had run was from a working tree that happened to contain untracked
+model files.
+
+That proof now lives in `.github/workflows/ci.yml`, which builds the image for
+linux/amd64 and runs `scripts/verify_image.sh` on every push. It is deliberately
+not out-of-band any more: when it was, it ran once, on a laptop, with a
+container engine installed for the occasion and removed the next day.
 """
 import ast
 import pathlib
@@ -332,3 +339,119 @@ class TestTheContainerRunsSafely:
             f"image runs Python {m.group(1)}.{m.group(2)}, tests run "
             f"{sys.version_info.major}.{sys.version_info.minor}"
         )
+
+
+class TestTheImageIsBuildableFromTheRepository:
+    """
+    The image must build from a clean checkout, not from one machine's leftovers.
+
+    This class exists because CI's very first run failed on:
+
+        chown: cannot access '/app/backend/ml_models': No such file or directory
+
+    Every file in `backend/ml_models/` is gitignored — `*.joblib`, `*.pkl`,
+    `*_trained_at.txt` — and nothing else was tracked there, so the directory
+    does not exist in a clean clone and `COPY backend/ ./backend/` cannot bring
+    it into the image. The Dockerfile then `chown`ed a path that was not there.
+
+    The build had nonetheless "succeeded" when it was run by hand, because that
+    machine had locally trained models sitting in the directory untracked. So
+    the image that was verified 11/11 and reported as deployment-ready was
+    never buildable from the repository at all. Nothing in this suite could see
+    it, and neither could a build run from a working tree — only a build from a
+    fresh checkout.
+
+    That is defect class ⑥, verified-here-only, in a new disguise: the earlier
+    verification was real, and was contingent on untracked local state nobody
+    had thought to look at.
+    """
+
+    def _dockerfile_mkdir_targets(self) -> set:
+        """Absolute paths the Dockerfile creates for itself."""
+        made = set()
+        for m in re.finditer(r"mkdir\s+(-\w+\s+)*([^\n&|;]+)", DOCKERFILE.read_text()):
+            for tok in m.group(2).split():
+                if tok.startswith("/"):
+                    made.add(tok.rstrip("/"))
+        return made
+
+    def _dockerfile_chown_targets(self) -> set:
+        """Absolute paths the Dockerfile chowns, which must therefore exist."""
+        targets = set()
+        for m in re.finditer(r"chown\s+(?:-\w+\s+)*[\w:]+\s+([^\n&|;]+)", DOCKERFILE.read_text()):
+            for tok in m.group(1).split():
+                if tok.startswith("/"):
+                    targets.add(tok.rstrip("/"))
+        return targets
+
+    def test_the_dockerfile_chowns_nothing_it_has_not_been_given(self):
+        # The exact failure CI caught. A chowned path has to come from
+        # somewhere: either the Dockerfile creates it, or a COPY brings it in
+        # from a tracked file in the repository. A path that depends on
+        # untracked local state is a build that works only on one machine.
+        import subprocess
+
+        tracked = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=REPO, capture_output=True, text=True, check=True,
+        ).stdout.split("\0")
+        tracked_dirs = set()
+        for f in tracked:
+            if not f:
+                continue
+            parts = pathlib.PurePosixPath(f).parts
+            for i in range(1, len(parts)):
+                tracked_dirs.add("/".join(parts[:i]))
+
+        made = self._dockerfile_mkdir_targets()
+        unmet = []
+        for target in sorted(self._dockerfile_chown_targets()):
+            if target in made or any(target.startswith(m + "/") for m in made):
+                continue  # the Dockerfile creates it
+            if target.startswith("/app/"):
+                repo_rel = target[len("/app/"):]
+                if repo_rel in tracked_dirs:
+                    continue  # a COPY brings it in from tracked content
+                unmet.append(
+                    f"{target} — nothing tracked under {repo_rel}/, so it is "
+                    f"absent from a clean clone"
+                )
+            else:
+                unmet.append(f"{target} — outside /app and never created")
+
+        assert not unmet, (
+            "the Dockerfile chowns paths it is not guaranteed to have:\n  "
+            + "\n  ".join(unmet)
+        )
+
+    def test_the_ml_models_directory_survives_a_clean_clone(self):
+        # The specific regression. Every artefact in here is gitignored on
+        # purpose — a committed model is a stale measurement shipped as a
+        # current one — so the directory needs at least one tracked file to
+        # exist at all.
+        import subprocess
+
+        out = subprocess.run(
+            ["git", "ls-files", "backend/ml_models"],
+            cwd=REPO, capture_output=True, text=True, check=True,
+        ).stdout.split()
+        assert out, (
+            "nothing is tracked under backend/ml_models/, so the directory does "
+            "not exist in a clean clone. gmm_detector calls os.makedirs at "
+            "import time and cannot create it as uid 10001 inside root-owned "
+            "/app/backend, and the Dockerfile's chown fails outright."
+        )
+
+    def test_no_fitted_model_is_committed(self):
+        # The other half of the same contract: the directory must exist, and it
+        # must not carry a model. A committed .joblib would be a measurement
+        # fitted to whatever macro history existed when it was written, shipped
+        # as though it described today.
+        import subprocess
+
+        out = subprocess.run(
+            ["git", "ls-files", "backend/ml_models"],
+            cwd=REPO, capture_output=True, text=True, check=True,
+        ).stdout.split()
+        fitted = [f for f in out if f.endswith((".joblib", ".pkl"))]
+        assert not fitted, f"fitted models are committed: {fitted}"
