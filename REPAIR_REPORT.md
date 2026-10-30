@@ -372,6 +372,74 @@ revert-verified.
 `backend/engines/layer_11_llm_explainer.py`,
 `backend/tests/test_llm_provider_refusal.py`
 
+**And then the product was given a model (2026-10-30).** Defects 38 and 39
+fixed the *reporting* and left the product with nothing to report: HuggingFace
+had no credits and the Anthropic key was a placeholder, so every run shipped
+the deterministic narrative. The user chose Gemini from a new GCP project, and
+the full decision — the restricted key, why the REST API instead of the SDK,
+and the model chosen by replaying a captured live prompt against each stable
+candidate — is in `PRD.md` §7.3. What belongs *here* is that a second provider
+is where this defect class gets a second chance, and it took it three times:
+
+- **An invalid Gemini key is a `400`, not a `401`.** A classifier keyed on
+  {401, 402, 403} would have called a dead key an ordinary failure, which is
+  defect 38 verbatim on a different provider.
+- **A retired model is a `404`.** Not anticipated — *found*. The configured
+  default was `gemini-2.5-flash`, and the first live call answered *"no longer
+  available to new users"*. Reasoning about this in advance would not have
+  caught it; making the call did.
+- **A 200 can carry nothing.** Gemini 2.5+ charges its own reasoning against
+  `maxOutputTokens`, so an unset thinking budget can return
+  `finishReason: MAX_TOKENS` with no text — the exact shape of "the model
+  returned no analysis", arriving with a success status. `thinkingBudget` is
+  now 0, which these prompts have no use for anyway.
+
+Both new statuses are decided by **wording**, not by status alone, and this is
+the one place the ordering from defect 38 inverts — for a good reason. 400 and
+404 are each equally the shape of a malformed request *of ours*, and blaming
+our own bug on the user's credentials is not a smaller lie than the one this
+class is about, merely a different one. So a 404 naming a retired model is a
+refusal, a 404 from a URL we got wrong is not, and both directions are pinned
+by tests. 401/402/403 stay unconditional: no provider answers those to a
+request we malformed.
+
+Two more were found while building it and fixed before they shipped, so
+neither is in the register — neither ever reached the product. 404 was briefly
+unconditional, caught not by review but by a revert check: the 404 tests kept
+passing against reverted code, which meant they were pinning nothing. And
+`GeminiExplainer(api_key="")` fell back to the ambient configured key through
+a falsiness test — a live credential silently substituted for an explicitly
+absent one, class ⑤ in new code. `None` now means "read the configuration" and
+`""` means "none".
+
+**Capacity is not a refusal.** The free tier sheds load with `503 - overloaded`
+on roughly half of all calls (five of eight during model selection). Three
+attempts with 1s/3s backoff, 503/504 only — retrying a 429 makes a rate limit
+worse, and a refusal returns the same answer every time. After three, the run
+degrades to the deterministic narrative and says so.
+
+**Verified live, not by inspection:** `POST /portfolio/analyze` over real
+market data returned 200 in 42.1s (two 503 retries included), with
+`llm_provider: "gemini"`, an **empty** `llm_notice`, model prose on all 14
+candidates, all four portfolio fields, all 12 degradation warnings still
+present after the LLM rewrite, and no key, URL or internal path in the body.
+The prose cites the computed figures rather than inventing any — *"-36.383
+delta_per_contract"*, *"basis_risk_r2 1.0"*, *"$1140 total_cost_usd"*. 39
+tests; every fix fails when reverted, in both directions.
+
+**One honest gap:** `when_works_best` and `when_fails` were absent on 4 of the
+14 candidates. Those two fields have no deterministic source anywhere in the
+product — `layer_05_llm_explainer.py` is their only writer and the frontend
+hides the section when they are empty — so an omission costs a section, not
+correctness, and nothing is substituted for them. It is prompt adherence, not
+a correctness or disclosure defect.
+
+**Files:** `backend/core/explainer/gemini_explainer.py` (new),
+`backend/core/explainer/response_parsers.py` (new),
+`backend/core/explainer/base_explainer.py`,
+`backend/core/explainer/__init__.py`, `backend/config/settings.py`,
+`backend/.env.example`, `backend/tests/test_gemini_explainer.py` (new)
+
 ### ⑤ Silent substitution — 6 defects
 
 The class: a backstop that fills in for a failed or blank upstream must report
@@ -964,7 +1032,7 @@ now tested at the unit, pipeline and live-HTTP levels.
 | 5. Per-holding recommendations | **Verified** | One entry per holding; TLT returned unhedged **with a stated reason** **[verified]** |
 | 6. Candidate detail (contract, strike, expiry, premium, Greeks, provenance) | **Verified** | 14 candidates, all OCC-verified; `premium_source` and `iv_source` on every one **[verified]** |
 | 7. Budget bar / cost comparison | **Verified** | 7,328 / 10,113 = 72.5% **[verified]** |
-| 8. Narrative explanation | **Verified** | Produced with no model available, and `llm_notice` **says so** **[verified]**. As of 2026-10-30 it also distinguishes *why*: a provider that refuses permanently (no credits, refused key) is reported as permanent and operator-actionable rather than as "no analysis for this run" — see defect 38 **[verified live] [tested]** |
+| 8. Narrative explanation | **Verified** | Produced with no model available, and `llm_notice` **says so** **[verified]**. It also distinguishes *why*: a provider that refuses permanently (no credits, refused key, retired model) is reported as permanent and operator-actionable rather than as "no analysis for this run" — see defect 38 **[verified live] [tested]**. As of 2026-10-30 it is also verified *with* a model: a live run over real market data produced Gemini prose on all 14 candidates with an **empty** `llm_notice`, the deterministic backstop standing aside, and all 12 degradation warnings intact afterwards **[verified live] [tested]** |
 | 9. Disclosures and data quality | **Verified** | Ledger + grouped warnings (8 on the market-open run, 37 pre-market); every degraded field named **[verified]** |
 | **9b. Disclosures survive an LLM rewrite** | **Verified** | Live `POST /portfolio/analyze` with a provider wired in: all 6 candidates rewritten by the model, all 5 disclosures still present and leading the `cons` list. Same request with the fix reverted: **5 deleted** **[verified] [tested]** |
 | **Failure scenarios** | **Verified** | 5/5 malformed inputs → 422 sanitised; malformed JSON → 422; unknown route → 404; 4/4 privileged endpoints → 503 fail-closed; **no internals leaked anywhere** **[verified]** |

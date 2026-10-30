@@ -659,6 +659,102 @@ every entry has at least one regression test. Grouped by the defect class from
 
 ---
 
+### 7.3 The language model provider
+
+Decided by the user on 2026-10-30, after defects 38 and 39 established that
+the product had no reachable model: **Gemini, from a dedicated GCP project.**
+
+**The project and the key.** Project `optionq-20261030-d85397` (display name
+`optionQ`), with `generativelanguage.googleapis.com` and
+`apikeys.googleapis.com` enabled; no billing link is required for the free
+tier. The API key is restricted to `generativelanguage.googleapis.com` alone,
+so a leak cannot reach the other APIs in the project or the two unrelated
+projects in the same account. It lives in `backend/.env`, which is gitignored
+and excluded from the image by a build-time guard that fails the build on a
+leak (defect 37). Its value has never been printed, logged or committed.
+
+**No SDK, and no new dependency.** The provider calls
+`POST .../v1beta/models/{model}:generateContent` with `requests==2.33.1`,
+which is already in the runtime closure. `google-genai` would have pulled
+google-auth, protobuf and grpcio into an image whose deployment contract
+asserts that all 73 distributions resolve to `cp313` linux x86-64 wheels with
+**zero source builds** — and grpcio is a common exception to that. The key
+travels in the `x-goog-api-key` header rather than a `?key=` query parameter,
+because `requests` copies the full URL into the text of every error it raises.
+
+**The model was chosen by measurement, not reputation.** The real combined
+prompt was captured from a live hedge run (3,954 characters of system
+instruction, a 5,518-character context, 7 candidates across 3 hedgeable
+positions) and replayed against each stable candidate, three trials each:
+
+| Model | Complete | Latency | Note |
+|---|---|---|---|
+| `gemini-3.5-flash` | 2/3 | **9–20s** | **Chosen.** All 7 candidates and all 4 portfolio fields whenever the call got through |
+| `gemini-3.6-flash` | 2/3 | 9–25s | Equal quality, slower |
+| `gemini-3.8-flash` | 2/3 | 17–56s | Google's recommended replacement, but too slow for a call on the request path; timed out once at 60s |
+| `gemini-3.7-flash` | 1/2 | 86s | Far too slow |
+| `gemini-2.5-flash`, `-flash-lite`, `-pro` | 0 | — | **404: retired for new users.** This was the configured default until the first live call rejected it |
+
+Pinned to an exact version. The API also serves `-preview` builds and shifting
+`-latest` aliases, and this repo already has a defect (36) about a dev
+prerelease reaching the dependency graph of a system that prices hedges; the
+thing writing the narratives should not change underneath a run either.
+
+**Three ways this provider could have repeated defect 38, all closed.**
+
+1. **An invalid key answers `400 INVALID_ARGUMENT / API_KEY_INVALID`, not
+   401.** A classifier keyed on {401, 402, 403} would have called a dead key
+   an ordinary failure and told the user to retry forever — the same lie on a
+   new provider. 400 is now examined.
+2. **A retired model answers 404.** Found live, not reasoned about: the
+   configured default was `gemini-2.5-flash`, and the first real call returned
+   *"no longer available to new users"*. A retired model stays retired.
+3. **Reasoning tokens are charged against `maxOutputTokens`.** Left unset,
+   Gemini 2.5+ can spend the whole budget thinking and return
+   `finishReason: MAX_TOKENS` with no text — an HTTP 200 carrying nothing,
+   which reaches the user as "the model returned no analysis". These prompts
+   restate figures that are already computed, so `thinkingBudget` is 0 and the
+   failure mode is designed out rather than handled.
+
+400 and 404 are decided by **wording**, not by status alone, because each is
+equally the shape of a malformed request of our own — and reporting our own
+bug as "your credentials were refused" is simply a different false statement.
+Both directions are pinned: a 404 naming a retired model is a refusal, a 404
+from a wrong URL of ours is not. 401/402/403 remain unconditional, since no
+provider answers those to a request we malformed.
+
+**Capacity, and why there is a retry.** The free tier sheds load with
+`503 - The model is currently overloaded`: five of eight calls during model
+selection. Without a retry, roughly half of all hedge runs would lose their
+narrative to a condition that clears in a second. Three attempts with 1s then
+3s of backoff; 503/504 only, because retrying a 429 makes the rate limit worse
+and the refusals give the same answer every time. A run that cannot get
+through in three attempts degrades to the deterministic narrative and says so.
+The free tier also enforces a per-minute request quota — reached during model
+selection, correctly classified as transient — so on this tier the narrative
+is best-effort by design, and the hedge analysis never depends on it.
+
+**Found while building it, and fixed before it shipped** (so neither is in the
+defect register — neither ever reached the product): 404 was briefly
+unconditional, which would have blamed a wrong URL of ours on the user's
+model, caught by a revert check that showed the 404 tests passing against the
+reverted code; and `GeminiExplainer(api_key="")` fell back to the ambient
+configured key through a falsiness test, substituting a live credential for an
+explicitly absent one — `None` now means "read the configuration" and `""`
+means "none".
+
+**What is verified.** 39 unit tests, each fix revert-verified in both
+directions, plus a live end-to-end `POST /portfolio/analyze` over real market
+data: HTTP 200 in 42.1s (including two 503 retries), `llm_provider: "gemini"`,
+an **empty** `llm_notice`, model prose on all 14 candidates, all 4
+portfolio-level fields, all 12 degradation warnings still present after the
+LLM rewrite, and no key, URL or internal path anywhere in the response body.
+`when_works_best`/`when_fails` were absent on 4 of 14 candidates: those two
+fields have no deterministic source anywhere in the product — the model is
+their only writer, and the frontend hides the section when they are empty — so
+an omission costs a section, not correctness, and nothing is substituted for
+them.
+
 ## 8. Verification
 
 ### 8.1 Test strategy
@@ -821,10 +917,10 @@ consequences for anyone working on this codebase:
 | ~~P1~~ | ~~Explain or bound the single-stock correlation weakness~~ | **Closed 2026-10-29 — it was never a defect.** See §7.2. The product's return series is byte-identical to an independent recompute from the raw provider JSON (`maxdiff = 0.00e+00`), and the window was the whole story: over 500 sessions AAPL/SPY gives R²=0.354, ρ=+0.595, β=1.03 against 0.083/+0.288 over the 252 the product fits on. Real mega-cap dispersion, correctly measured and correctly gated — SPY is *rejected* as an AAPL cross hedge at R²=0.084 < `MIN_CROSS_R2 = 0.30`. **This row contradicted §7.2 for a day; the roadmap was not updated when the item closed.** |
 | ~~P1~~ | ~~Commit the working tree~~ | **Done 2026-10-29/30** — `732cd56` (frontend), `e6a6e51` (docs), `b9e093b` (the `.dockerignore` P0). On `repair/end-to-end-phase-2`, **local only: nothing pushed, nothing deployed.** |
 | ~~P1~~ | ~~Build and run the container image once~~ | **Done 2026-10-29.** Podman installed, image built `--platform linux/amd64` and run: 11/11 checks after the fix. It found defect 37 — five live API keys in the image, because every `.dockerignore` rule aimed inside `backend/` matched nothing and five test assertions checked the rules' text rather than their effect. Now 668MB, with a build-time guard that fails the build on any future leak |
-| **Held** | Deploy to Cloud Run once, behind approval | **Deferred at the user's instruction (2026-10-30): the Google Cloud and Vercel accounts are being changed, so any platform work now would be verified against credentials that are about to be replaced.** The serverless backend half was deleted in `17258a4` — its runtime closure is 370MB against Vercel's 250MB function limit, it cannot host APScheduler, and the four `os.environ.get("VERCEL")` branches that papered over this made that deployment behave differently from everything the suite exercises. The image is verified; the platform is not. Networking, memory limits, cold start and the real service account are untested, and `OPTIONQ_CACHE_DB` must point at a writable volume there Networking, memory limits, cold start and the real service account are untested, and `OPTIONQ_CACHE_DB` must point at a writable volume there |
+| **Held** | Deploy to Cloud Run once, behind approval | **Deferred at the user's instruction (2026-10-30): the Google Cloud and Vercel accounts are being changed, so any platform work now would be verified against credentials that are about to be replaced.** The serverless backend half was deleted in `17258a4` — its runtime closure is 370MB against Vercel's 250MB function limit, it cannot host APScheduler, and the four `os.environ.get("VERCEL")` branches that papered over this made that deployment behave differently from everything the suite exercises. The image is verified; the platform is not. Networking, memory limits, cold start and the real service account are untested, and `OPTIONQ_CACHE_DB` must point at a writable volume there |
 | ~~P1~~ | ~~Move the container build into CI or Cloud Build~~ | **Done 2026-10-30.** `.github/workflows/ci.yml` builds `--platform linux/amd64` and runs `scripts/verify_image.sh` on every push; GitHub's runners are x86-64, so no emulation. **It failed on its first run and found a P0-class defect:** everything in `backend/ml_models/` is gitignored, so the directory is absent from a clean clone and `chown` could not find it — the 2026-10-29 build had only succeeded because that machine had untracked locally-trained models sitting there. **The image was never buildable from the repository.** Fixed three ways (Dockerfile `mkdir -p`, a tracked README so the directory survives a clean clone, three regression tests), each revert-verified. A second failure followed: `verify_image.sh` asserted `POST` on `/admin/cron/retrain-*`, which the app serves as `GET`, so all four authorization cells had been returning 405 without ever reaching the dependency they claimed to test — `expect` now treats a 405 as a defect in the check. All three jobs green as of `58ebb99`. The original rationale stands: *the 2026-10-29 verification was real but no longer reproducible here*: podman was removed from the machine on 2026-10-30. A verification that depends on a tool somebody has to remember to install, on a laptop, is a verification that will quietly stop happening — and the one time it ran it found a P0. It belongs in a pipeline that builds `--platform linux/amd64` on every change and runs the Dockerfile's leak guard, so neither the build nor the guard depends on anyone's local setup |
-| **P2** | Exercise the Claude explainer inside the container | The deterministic fallback is verified and discloses itself correctly; the LLM path in the container is not. No longer blocked on a local runtime — CI builds and runs the image on every push — but **blocked on a working provider account**: see the row below |
-| **P1 — needs a decision, not code** | Give the product a working language model, or decide it ships without one | Defects 38 and 39 fixed the *reporting*: a refusal is now reported as permanent and operator-actionable instead of "no analysis for this run". They did not give the product a model. As of 2026-10-30 the HuggingFace account on this environment returns **HTTP 402, no remaining credits**, and `ANTHROPIC_API_KEY` is a 13-character placeholder, so **every hedge run ships the deterministic narrative** — correct, disclosed, and visibly thinner than model prose. Three options, all the user's call: fund the HuggingFace account, supply a real `ANTHROPIC_API_KEY`, or accept the deterministic narrative as the product and stop presenting the LLM as a feature. Also note `llm_model` defaults to `claude-sonnet-4-6`, an older generation than the current Claude 5 family — worth updating if the Claude path is chosen |
+| **P2** | Exercise the LLM explainer inside the container | The deterministic fallback is verified and discloses itself correctly; the LLM path in the container is not. **No longer blocked** — the Gemini provider works against a live key (§7.3) and needs no new dependency, since it calls the REST API with the already-pinned `requests`. What is untested is that path *inside the image*: the container would need `GEMINI_API_KEY` and `LLM_PROVIDER=gemini` passed in at run time, which is deployment-shaped work and so sits behind the Held row |
+| ~~P1 — needed a decision~~ | ~~Give the product a working language model, or decide it ships without one~~ | **Answered 2026-10-30 by the user: Gemini, from a new GCP project.** Defects 38 and 39 had fixed only the *reporting* — a refusal was reported as permanent and operator-actionable instead of "no analysis for this run" — and left the product with no model: HuggingFace returned HTTP 402 (no credits) and `ANTHROPIC_API_KEY` was a 13-character placeholder, so every run shipped the deterministic narrative. A `gemini` provider now exists (§7.3), the key comes from a dedicated project restricted to one API, and a live run over real market data produces model prose with an empty `llm_notice`. The deterministic narrative stays as the backstop and still discloses itself when it is used. `llm_model` still defaults to `claude-sonnet-4-6`, which only matters if the Claude path is ever chosen again |
 | ~~P0~~ | ~~Resolve the no-valid-quote question~~ | **Done 2026-10-29** — a conditional, self-calibrating refusal that distinguishes an absent market from a closed one. §7.2 |
 | ~~P0~~ | ~~Re-run the full end-to-end verification during US market hours~~ | **Done 2026-10-29** — `market_mid` + `contract_iv` observed on live two-sided quotes |
 | ~~P0~~ | ~~Stop the explanation layer from deleting the product's disclosures~~ | **Done 2026-10-29** — found while closing the Layer 5 item; proven both ways over the live HTTP route. Defect 31 |
