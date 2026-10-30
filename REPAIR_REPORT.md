@@ -1056,7 +1056,7 @@ and the SPY candidates whose mid was not an attainable fill price were
 **excluded**, not quietly priced. That is rule 5 holding under live data in the
 deployment artifact.
 
-**What this still does not prove.** Three things, stated rather than papered
+**What this still does not prove.** Four things, stated rather than papered
 over:
 
 - **Cloud Run itself.** Networking, memory limits, cold start, request timeouts
@@ -1068,6 +1068,13 @@ over:
 - **amd64 under emulation.** The container ran x86-64 on arm64 via qemu. The
   logic, the imports and the glibc are the deployment target's; the instruction
   timing is not, which is part of why the analysis took 31.2s here.
+- **That it will happen again.** Podman was installed on 2026-10-29 only to run
+  this verification, and was removed from the machine on 2026-10-30, so none of
+  the above is reproducible here as the repo now stands. The evidence is real
+  and the Dockerfile's leak guard is committed, but the guard only runs when
+  somebody builds, and nothing in the repository causes a build. Until the
+  build lives in CI or Cloud Build (§9, P1), the single most productive check
+  of this entire repair is also the one least likely to run again.
 
 **What it does prove** is the thing the previous pass of this report could only
 assume — and the assumption was wrong, in the most expensive direction

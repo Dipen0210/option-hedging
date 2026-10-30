@@ -81,3 +81,10 @@ htmlcov/
 # Per-machine training timestamps. They describe local *.pkl artifacts, which
 # are themselves ignored above, so tracking them only produces diff noise.
 backend/ml_models/*_trained_at.txt
+
+# Frontend verification screenshots, written to the repo root by the
+# browser-driven end-to-end run. They are evidence of one run on one machine at
+# one moment — the findings they support live in REPAIR_REPORT.md — so tracking
+# them adds megabytes of binary diff that nothing reads. Root-anchored on
+# purpose: frontend/ image assets are real source.
+/[0-9][0-9]-*.png
