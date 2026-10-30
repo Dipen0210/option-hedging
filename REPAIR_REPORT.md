@@ -242,7 +242,7 @@ ranks the executable price; `_apply_net_market_quote` preserves credit.
 
 **Pinned by:** `test_iv_plausibility.py` (6 classes), `test_selector.py` (12 classes)
 
-### ④ Asserted label — 7 defects
+### ④ Asserted label — 9 defects
 
 The class: a figure's units or horizon asserted by its consumer rather than
 reported by its producer. L3 scales VaR to the user's hedge horizon, but the
@@ -313,6 +313,64 @@ the build-time guard in §F, registered as defect 37.
 
 **Files:** `.dockerignore`, `Dockerfile`, `backend/tests/fixtures/dockerignore.py`,
 `backend/tests/test_security.py`, `backend/tests/test_deployment_contract.py`
+
+**Defect 38 — a permanent provider failure labelled a per-run one (P1, found
+2026-10-30).** The same class applied to a cause rather than a unit. HuggingFace
+answers every explanation call on this account with HTTP 402 *"You have no
+remaining credits"*. `_is_rate_limit` tested the message for `"429"`,
+`"rate limit"`, `"too many requests"` and `"quota"`, matched none, so the
+explainer logged and returned empty — and L11, seeing a call that had succeeded
+and produced nothing, told the user:
+
+> *"The language model returned no analysis for this run, so the narrative below
+> was generated directly from the computed figures instead."*
+
+The account has no credits. The next run fails identically and so does every one
+after it; only an operator can clear it. **"for this run" invites a retry that
+cannot work**, and the same sentence also covered a model that genuinely had
+nothing to say, so the two were indistinguishable in the UI. Nothing in the code
+had established the cause — the wording was a label asserted over an
+unclassified failure. Closing it is what showed the Claude provider does the
+same thing for a refused API key.
+
+The fix reads the **HTTP status**, and consults the message only when there is
+none. That ordering is the repair, not an implementation detail: the real 402
+body arrives with a request ID such as `Root=1-6ae50969-…` and an appended MDN
+link, so substring-matching an error string for the digits `"429"` can classify
+a dead account as a transient limit. A test pins a 402 whose text contains both
+`"429"` and `"quota"` and requires it to stay permanent. `LLMProviderRejectedError`
+(401/402/403) and `LLMRateLimitError` are now distinct types; the user-facing
+reason is derived from the status, never copied from the response body, so no
+request ID, internal router URL or account identifier reaches the response.
+An ordinary 500 still degrades quietly — a provider hiccup must not cost a user
+their hedge analysis, and neither does a refusal.
+
+`base_explainer`'s contract previously read *"Never raise exceptions to the
+caller"*, which is the sentence that justified swallowing this; it now carves out
+refusals and records why.
+
+**Verified against the live account**, not a stub: the notice reads *"…refused
+this request because the provider account has no remaining credits. This is not
+a temporary problem…"*, the narrative and all recommendations are still
+delivered, and nothing internal appears. 25 tests; reverting the classifier to
+the keyword logic fails 14 of them, including an end-to-end case that drives the
+real explainer with only the HTTP client stubbed.
+
+**Defect 39 — the same swallow in `ClaudeExplainer` (P1, found 2026-10-30).**
+Found while closing 38, not reported separately because it is the same
+mechanism: both `explain_*` methods returned an empty result for *every*
+exception, so a refused API key and a malformed response were the same event to
+the caller. `ANTHROPIC_API_KEY` in this environment is 13 characters — a
+placeholder — so switching `LLM_PROVIDER` to `claude` today produces a 401, and
+before this fix the product would have reported "no analysis for this run"
+indefinitely. Both methods now classify before degrading. 2 tests, both
+revert-verified.
+
+**Files:** `backend/core/explainer/base_explainer.py`,
+`backend/core/explainer/huggingface_explainer.py`,
+`backend/core/explainer/claude_explainer.py`,
+`backend/engines/layer_11_llm_explainer.py`,
+`backend/tests/test_llm_provider_refusal.py`
 
 ### ⑤ Silent substitution — 6 defects
 
@@ -906,7 +964,7 @@ now tested at the unit, pipeline and live-HTTP levels.
 | 5. Per-holding recommendations | **Verified** | One entry per holding; TLT returned unhedged **with a stated reason** **[verified]** |
 | 6. Candidate detail (contract, strike, expiry, premium, Greeks, provenance) | **Verified** | 14 candidates, all OCC-verified; `premium_source` and `iv_source` on every one **[verified]** |
 | 7. Budget bar / cost comparison | **Verified** | 7,328 / 10,113 = 72.5% **[verified]** |
-| 8. Narrative explanation | **Verified** | Produced with no model available, and `llm_notice` **says so** **[verified]** |
+| 8. Narrative explanation | **Verified** | Produced with no model available, and `llm_notice` **says so** **[verified]**. As of 2026-10-30 it also distinguishes *why*: a provider that refuses permanently (no credits, refused key) is reported as permanent and operator-actionable rather than as "no analysis for this run" — see defect 38 **[verified live] [tested]** |
 | 9. Disclosures and data quality | **Verified** | Ledger + grouped warnings (8 on the market-open run, 37 pre-market); every degraded field named **[verified]** |
 | **9b. Disclosures survive an LLM rewrite** | **Verified** | Live `POST /portfolio/analyze` with a provider wired in: all 6 candidates rewritten by the model, all 5 disclosures still present and leading the `cons` list. Same request with the fix reverted: **5 deleted** **[verified] [tested]** |
 | **Failure scenarios** | **Verified** | 5/5 malformed inputs → 422 sanitised; malformed JSON → 422; unknown route → 404; 4/4 privileged endpoints → 503 fail-closed; **no internals leaked anywhere** **[verified]** |
@@ -1106,7 +1164,7 @@ image layer. The build was the only thing that could see it.
 
 > Took a quantitative hedging prototype that passed its own smoke tests and
 > failed a readiness audit at 2.5/10, and repaired it to a verified
-> end-to-end product: 37 defects across market data, options pricing, risk
+> end-to-end product: 39 defects across market data, options pricing, risk
 > measurement, position sizing, ranking, LLM integration and security, each
 > with a regression test confirmed to fail against the unfixed code. Built a
 > request-scoped data-provenance ledger so every figure reports whether it
