@@ -54,7 +54,39 @@ _REJECTION_REASONS = {
     401: "the configured API credentials were refused",
     402: "the provider account has no remaining credits",
     403: "the configured credentials are not permitted to use this model",
+    404: "the configured model is not available to this account",
 }
+
+
+# Statuses that settle the question by themselves. A provider does not answer
+# 401/402/403 to a request we malformed, so no wording check is needed or
+# wanted: the real 402 body contains the digits "429".
+_UNCONDITIONAL_STATUSES = frozenset({401, 402, 403})
+
+# Statuses that do not settle it, because each is equally the shape of a bad
+# request of our own. Decided by wording below. 404 must NOT be unconditional:
+# "that model is retired for your account" and "we called the wrong URL" share
+# a status, and reporting our own bug as a credential problem is its own lie.
+_AMBIGUOUS_STATUSES = frozenset({400, 404})
+
+_CREDENTIAL_PHRASES = (
+    "api key not valid", "api_key_invalid", "invalid api key",
+    "api key expired", "invalid authentication", "unauthorized",
+)
+
+# A model the account cannot reach. Found live rather than reasoned about:
+# `gemini-2.5-flash` answers a new project with "404 — This model
+# models/gemini-2.5-flash is no longer available to new users", and a retired
+# model will keep being retired on every retry.
+_MODEL_PHRASES = (
+    "no longer available", "is not found", "not found for api version",
+    "model not found", "does not exist",
+)
+
+_PERMISSION_PHRASES = (
+    "permission_denied", "permission denied",
+    "has not been used in project", "is disabled",
+)
 
 
 def _http_status(exc: BaseException) -> Optional[int]:
@@ -92,10 +124,29 @@ def raise_if_provider_refused(exc: BaseException, provider: str) -> None:
     status = _http_status(exc)
 
     if status is not None:
-        if status in _REJECTION_REASONS:
+        if status in _UNCONDITIONAL_STATUSES:
             raise LLMProviderRejectedError(provider, _REJECTION_REASONS[status]) from exc
         if status == 429:
             raise LLMRateLimitError(f"{provider} rate limit reached") from exc
+        if status in _AMBIGUOUS_STATUSES:
+            # 400 and 404 are the two statuses that do not settle the question,
+            # because each is equally the shape of a bad request of our own —
+            # and a bug of ours is not a refusal and must not be reported as
+            # one. So here, and only here, the wording decides.
+            #
+            # Both must be examined rather than ignored. Google's Generative
+            # Language API answers an invalid key with `400 INVALID_ARGUMENT /
+            # API_KEY_INVALID`, not 401, and a retired model with a 404 — so
+            # letting either fall through as an ordinary failure would
+            # reproduce the exact defect this function exists to prevent, on a
+            # different provider.
+            msg = str(exc).lower()
+            if any(k in msg for k in _CREDENTIAL_PHRASES):
+                raise LLMProviderRejectedError(provider, _REJECTION_REASONS[401]) from exc
+            if any(k in msg for k in _PERMISSION_PHRASES):
+                raise LLMProviderRejectedError(provider, _REJECTION_REASONS[403]) from exc
+            if any(k in msg for k in _MODEL_PHRASES):
+                raise LLMProviderRejectedError(provider, _REJECTION_REASONS[404]) from exc
         return
 
     # No status to go on — fall back to the wording. Deliberately no bare "402"

@@ -9,8 +9,26 @@ _ENV_FILE = os.path.join(os.path.dirname(__file__), "..", ".env")
 class Settings(BaseSettings):
     # Anthropic / LLM
     anthropic_api_key: str = ""
-    llm_provider: str = "claude"       # "claude" | "huggingface" | "ollama"
+    llm_provider: str = "claude"       # "claude" | "gemini" | "huggingface" | "ollama"
     llm_model: str = "claude-sonnet-4-6"
+
+    # Google Gemini, via the Generative Language REST API.
+    #
+    # Pinned to an exact stable version on purpose: the API also serves
+    # `-preview` builds and shifting `-latest` aliases, and a hedging system
+    # should not have the thing writing its narratives change underneath it
+    # between runs. (This repo already has a defect — 36 — about a dev
+    # prerelease reaching the dependency closure.)
+    #
+    # gemini-3.5-flash was chosen by measurement against the real combined
+    # prompt captured from a live hedge run, not by reputation. Over three
+    # trials each it explained all 7 candidates and filled all 4 portfolio
+    # fields whenever the call got through, at 9-20s; gemini-3.6-flash matched
+    # it at 9-25s and gemini-3.8-flash took 17-56s and timed out once, which is
+    # too slow for a call on the request path. gemini-2.5-flash, -flash-lite
+    # and -pro all answer a new project with 404: retired for new users.
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.5-flash"
 
     # HuggingFace Inference API
     hf_api_token: str = ""

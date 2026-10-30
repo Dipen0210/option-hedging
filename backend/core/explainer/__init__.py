@@ -10,6 +10,8 @@ Usage:
 
 Available providers:
     "claude"        — Anthropic claude-sonnet-4-6 (settings.anthropic_api_key)
+    "gemini"        — Google Gemini over the Generative Language REST API
+                      (settings.gemini_api_key, settings.gemini_model)
     "huggingface"   — meta-llama/Llama-3.3-70B-Instruct via HF Inference API
                       (settings.hf_api_token, settings.hf_model)
     "ollama"        — a local Ollama server
@@ -18,6 +20,7 @@ Available providers:
 import logging
 from backend.core.explainer.base_explainer import BaseLLMExplainer, CandidateExplanation, PortfolioExplanation
 from backend.core.explainer.claude_explainer import ClaudeExplainer
+from backend.core.explainer.gemini_explainer import GeminiExplainer
 from backend.core.explainer.huggingface_explainer import HuggingFaceExplainer
 from backend.core.explainer.ollama_explainer import OllamaExplainer
 from backend.core.explainer.prompt_builder import PromptBuilder
@@ -39,6 +42,8 @@ def get_explainer(provider: str = None) -> BaseLLMExplainer:
     settings = get_settings()
     p = (provider or settings.llm_provider or "claude").lower()
 
+    if p == "gemini":
+        return GeminiExplainer()
     if p == "huggingface":
         return HuggingFaceExplainer()
     if p == "ollama":
@@ -61,6 +66,7 @@ __all__ = [
     "CandidateExplanation",
     "PortfolioExplanation",
     "ClaudeExplainer",
+    "GeminiExplainer",
     "HuggingFaceExplainer",
     "OllamaExplainer",
     "PromptBuilder",
