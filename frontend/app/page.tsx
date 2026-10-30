@@ -1136,7 +1136,9 @@ function PortfolioSummary({ result }: { result: HedgeOutput }) {
         </p>
       )}
 
-      {/* LLM rate-limit notice */}
+      {/* Why the narrative below is what it is: rate limit, permanent provider
+          refusal, no provider configured, an outright failure, or a backstop that
+          filled some fields. One of five notices, not only a rate limit. */}
       {result.llm_notice && (
         <div className="border-t border-white/6 pt-4">
           <p className="text-xs text-amber-400/80 bg-amber-400/8 border border-amber-400/20 rounded-lg px-3 py-2">
