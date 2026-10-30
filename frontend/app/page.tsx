@@ -1,12 +1,14 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import type {
   HedgeOutput,
   AssetClass,
+  DataQuality,
   InstrumentCandidate,
   HedgeRecommendation,
+  RiskEstimateProvenance,
 } from "@/types/hedgeos";
 
 // ─── Ticker universe ──────────────────────────────────────────────────────────
@@ -186,6 +188,302 @@ function HedgeCategoryBadge({ category }: { category: string }) {
 
 // ─── Candidate card (replaces table row) ─────────────────────────────────────
 
+/**
+ * Whether this premium is one you could trade on.
+ *
+ * `market_mid` means a two-sided quote existed and the midpoint was used.
+ * Anything else means the figure is a model output: the venue published no
+ * quote (outside 09:30–16:00 ET it publishes none at all), so the number is
+ * theoretical. The two were rendered identically, which is the difference
+ * between "this costs $4,200" and "this would cost about $4,200 if it traded
+ * at fair value" — and the budget check downstream is only as meaningful as
+ * the price it ran against.
+ */
+function PremiumSourceBadge({ c }: { c: InstrumentCandidate }) {
+  const market = c.premium_source === "market_mid";
+  return (
+    <span
+      className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${
+        market
+          ? "bg-emerald-500/10 text-emerald-300/80 border-emerald-500/20"
+          : "bg-amber-400/10 text-amber-300/80 border-amber-400/20"
+      }`}
+      title={market
+        ? "Priced from the live bid/ask midpoint"
+        : "No two-sided quote was available — this premium is a model estimate, not an executable price"}
+    >
+      {market ? "market price" : "model estimate"}
+    </span>
+  );
+}
+
+/**
+ * Contract identity, tradability, and the vol the price was struck with.
+ *
+ * Every row here answers a question a user would otherwise have to take on
+ * trust: is this a real listed contract (`contract_symbol`,
+ * `strike_is_listed`), could I get out of it (`open_interest`,
+ * `daily_volume`, `bid_ask_spread_pct`), and what volatility assumption is
+ * the premium resting on (`iv_used`, `iv_source`).
+ *
+ * A null liquidity figure means the venue published nothing, which is NOT
+ * zero. Rendering a missing open interest as "0 OI" would invent a fact — and
+ * the most alarming one available — so missing stays visibly missing.
+ */
+function ProvenanceStrip({ c }: { c: InstrumentCandidate }) {
+  const num = (v: number | null | undefined) =>
+    v == null ? null : v.toLocaleString();
+
+  const rows: { label: string; value: React.ReactNode; warn?: boolean }[] = [];
+
+  if (c.contract_symbol) {
+    rows.push({
+      label: "Contract",
+      value: <span className="font-mono">{c.contract_symbol}</span>,
+    });
+  }
+  if (c.short_contract_symbol) {
+    rows.push({
+      label: "Short leg",
+      value: <span className="font-mono">{c.short_contract_symbol}</span>,
+    });
+  }
+  if (c.strike_is_listed === false) {
+    rows.push({
+      label: "Strike",
+      value: "requested strike is not listed — the nearest listed strike was used",
+      warn: true,
+    });
+  }
+
+  if (c.bid != null && c.ask != null && (c.bid > 0 || c.ask > 0)) {
+    rows.push({
+      label: "Quote",
+      value: (
+        <span className="font-mono">
+          {fmt$(c.bid)} / {fmt$(c.ask)}
+          {c.bid_ask_spread_pct != null && (
+            <span className="text-white/30"> ({(c.bid_ask_spread_pct * 100).toFixed(1)}% wide)</span>
+          )}
+        </span>
+      ),
+      warn: c.bid_ask_spread_pct != null && c.bid_ask_spread_pct > 0.10,
+    });
+  } else {
+    rows.push({
+      label: "Quote",
+      value: "none published — the market for this contract was closed or untraded",
+      warn: true,
+    });
+  }
+
+  const oi  = num(c.open_interest);
+  const vol = num(c.daily_volume);
+  rows.push({
+    label: "Liquidity",
+    value:
+      oi == null && vol == null
+        ? "not published"
+        : `${oi ?? "—"} open interest · ${vol ?? "—"} traded today`,
+    warn: c.liquidity_ok === false,
+  });
+
+  if (c.iv_used != null && c.iv_used > 0) {
+    // The backend emits exactly these four, in descending order of how much
+    // they actually say about THIS contract (selector.py `_get_vol` /
+    // `_price_option`). Only the first two come from the option market; the
+    // other two are substitutes, and a realized or market-wide figure
+    // standing in for implied vol can misprice a skewed strike badly — a
+    // 85%-moneyness SPY put quoted 24.7% IV against 10.0% realized. Showing
+    // the raw slug told the user nothing, so each is spelled out.
+    const ivWording: Record<string, { text: string; warn: boolean }> = {
+      contract_iv:    { text: "this strike's own implied vol", warn: false },
+      atm_iv:         { text: "at-the-money implied vol — no skew adjustment for this strike", warn: false },
+      // Realized vol is backward-looking, and index options trade at a
+      // persistent premium to it — measured at 0.2473 implied against 0.0999
+      // realized on a live SPY put chain. Naming the substitution is not
+      // enough on its own; the direction of the error is what tells the user
+      // the premium below is a floor rather than a quote.
+      realized_vol:   { text: "substituted: 20-day realized vol, not the option market's view \u2014 options usually trade above realized vol, so this premium is likely an underestimate", warn: true },
+      garch_forecast: { text: "substituted: market-wide GARCH forecast, not specific to this underlying", warn: true },
+    };
+    const iv = ivWording[c.iv_source] ?? {
+      text: c.iv_source || "source not reported",
+      warn: true,
+    };
+    rows.push({
+      label: "Implied vol",
+      value: (
+        <>
+          <span className="font-mono">{(c.iv_used * 100).toFixed(1)}%</span>
+          <span className={iv.warn ? "" : "text-white/30"}> · {iv.text}</span>
+        </>
+      ),
+      warn: iv.warn,
+    });
+  }
+
+  // What the basis-risk R² was measured over. The tile above shows the
+  // number and grades it "Low / Moderate / High basis risk"; that grade is a
+  // claim about the hedge, and an R² of 0.62 from the 30-observation minimum
+  // does not support it as well as one from a full year. The backend has
+  // always returned the sample alongside the correlation and nothing read it.
+  if (c.basis_risk_source === "identity") {
+    rows.push({
+      label: "Basis R²",
+      value: "1.00 by identity — the hedge is the same underlying, so there is no tracking error to estimate",
+    });
+  } else if (c.basis_risk_source === "tail_correlation") {
+    rows.push({
+      label: "Basis R²",
+      value: "bottom-decile correlation, not a full-sample R² — it describes behaviour in sell-offs only",
+    });
+  } else if (c.basis_risk_n_obs != null) {
+    const se = c.basis_risk_stderr;
+    rows.push({
+      label: "Basis R²",
+      value: (
+        <>
+          <span className="font-mono">{c.basis_risk_r2.toFixed(2)}</span>
+          <span className={c.basis_risk_n_obs < 60 ? "" : "text-white/30"}>
+            {" "}· {c.basis_risk_n_obs.toLocaleString()} overlapping sessions
+            {c.basis_risk_window_days != null && ` in a ${c.basis_risk_window_days}-day window`}
+            {se != null && `, ±${se.toFixed(3)} on the correlation`}
+          </span>
+        </>
+      ),
+      // A correlation from fewer than ~60 overlapping sessions is too thin to
+      // grade a hedge on, so the grade beside it is flagged rather than shown
+      // with the same confidence as one from a year of data.
+      warn: c.basis_risk_n_obs < 60,
+    });
+  }
+
+  if (c.earnings_warning) {
+    rows.push({
+      label: "Earnings",
+      value: c.earnings_date
+        ? `${c.earnings_warning} (${c.earnings_date})`
+        : c.earnings_warning,
+      warn: true,
+    });
+  }
+
+  return (
+    <div className="rounded-lg bg-white/3 border border-white/6 p-3">
+      <p className="text-[10px] font-semibold text-white/30 uppercase tracking-widest mb-2">
+        Contract &amp; data provenance
+      </p>
+      <dl className="space-y-1.5">
+        {rows.map(({ label, value, warn }) => (
+          <div key={label} className="flex gap-3 text-[11px] leading-relaxed">
+            <dt className="text-white/30 w-20 shrink-0">{label}</dt>
+            <dd className={warn ? "text-amber-300/80" : "text-white/55"}>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+/**
+ * What the "Without hedge" figures above were measured from.
+ *
+ * The VaR, the expected shortfall and both stress losses are all produced by
+ * the backend with a sample behind them, and beta multiplies straight through
+ * the stress numbers. Until this was rendered, a VaR assuming a flat 20%
+ * annual vol because the holding had 12 return observations looked exactly
+ * like one estimated from two years of its own returns, and a beta explaining
+ * 0.4% of a holding's variance was presented with the same authority as one
+ * explaining 88%.
+ */
+function RiskBasisNote({ rp }: { rp: RiskEstimateProvenance }) {
+  if (!rp.data_available) {
+    return (
+      <p className="mt-2 text-[10px] leading-relaxed text-amber-300/80">
+        These figures are not measurements.{" "}
+        {rp.unavailable_reason || "Risk analysis failed for this holding."}{" "}
+        Nothing here may be read as this position&apos;s risk.
+      </p>
+    );
+  }
+
+  const parts: { text: string; warn: boolean }[] = [];
+
+  // VaR method. "assumed_vol_fallback" is the one that matters: it is an
+  // assumption about the position, not an estimate from it.
+  if (rp.var_method === "assumed_vol_fallback") {
+    parts.push({
+      text:
+        "VaR assumes a flat annual volatility — there were too few return " +
+        "observations to estimate this holding’s own distribution, so it is " +
+        "an assumption, not an estimate",
+      warn: true,
+    });
+  } else if (rp.var_method === "normal_approximation") {
+    parts.push({
+      text:
+        "VaR uses a normal approximation with no fat-tail correction, so it " +
+        "understates the tail",
+      warn: true,
+    });
+  } else if (rp.var_method === "parametric_cornish_fisher") {
+    parts.push({
+      text:
+        `VaR estimated from ${rp.var_n_obs != null ? `${rp.var_n_obs.toLocaleString()} ` : ""}` +
+        "daily returns with a fat-tail correction" +
+        (rp.var_sigma_source === "garch_forecast"
+          ? ", scaled by a GARCH volatility forecast"
+          : ""),
+      warn: false,
+    });
+  }
+
+  // Beta, which the stress rows multiply through.
+  if (!rp.beta_available) {
+    parts.push({
+      text: "beta could not be measured — the stress losses beside it are not reliable",
+      warn: true,
+    });
+  } else if (rp.beta_r2 != null && rp.beta_n_obs != null) {
+    const weak = rp.beta_r2 < 0.20;
+    parts.push({
+      text:
+        `beta fitted on ${rp.beta_n_obs.toLocaleString()} sessions, ` +
+        `R² ${rp.beta_r2.toFixed(2)}` +
+        (rp.beta_stderr != null ? ` ±${rp.beta_stderr.toFixed(3)}` : "") +
+        (weak
+          ? " — SPY explains almost none of this holding’s moves, so the SPY stress rows say little about it"
+          : ""),
+      warn: weak,
+    });
+  }
+
+  // Exposures that could not be measured at all. A populated entry is the
+  // difference between "insensitive to rates" and "rate sensitivity unknown".
+  const unmeasured = Object.keys(rp.factors_unavailable ?? {});
+  if (unmeasured.length > 0) {
+    parts.push({
+      text: `not measured: ${unmeasured.join(", ")}`,
+      warn: true,
+    });
+  }
+
+  if (parts.length === 0) return null;
+
+  return (
+    <p className="mt-2 text-[10px] leading-relaxed text-white/30">
+      <span className="text-white/25">Measured from: </span>
+      {parts.map(({ text, warn }, i) => (
+        <span key={i} className={warn ? "text-amber-300/80" : undefined}>
+          {i > 0 && <span className="text-white/20"> · </span>}
+          {text}
+        </span>
+      ))}
+    </p>
+  );
+}
+
 function CandidateCard({
   c, notional, rank, defaultOpen,
 }: {
@@ -227,6 +525,7 @@ function CandidateCard({
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-sm font-semibold text-white leading-tight">{c.strategy}</span>
               <HedgeCategoryBadge category={c.hedge_category} />
+              <PremiumSourceBadge c={c} />
             </div>
             <div className="flex items-center gap-2 mt-0.5">
               <span className="text-xs font-mono text-white/35">{c.ticker}</span>
@@ -244,7 +543,13 @@ function CandidateCard({
                 <p className="text-[10px] font-mono text-white/25">mkt mid · {fmt$(c.market_premium)}/contract</p>
               </>
             ) : (
-              <p className="text-sm font-mono font-semibold text-white">{fmt$(c.total_cost)}</p>
+              <>
+                <p className="text-sm font-mono font-semibold text-white">{fmt$(c.total_cost)}</p>
+                {/* Not a market price. Saying so here, not only in the
+                    expanded panel, because this is the figure a user compares
+                    across cards without ever opening one. */}
+                <p className="text-[10px] font-mono text-amber-300/60">modelled · no live quote</p>
+              </>
             )}
             <p className={`text-[11px] font-mono ${costStyle(costPct)}`}>{fmtPct(costPct)} of pos.</p>
             <p className={`text-[11px] font-mono mt-0.5 ${coveragePct >= 1 ? "text-emerald-400" : coveragePct >= 0.5 ? "text-amber-400" : "text-red-400"}`}>
@@ -284,8 +589,18 @@ function CandidateCard({
           {/* Metrics */}
           <div className="grid grid-cols-3 gap-2">
             {[
-              { label: "Basis Risk R²", value: c.basis_risk_r2.toFixed(2),
-                sub: c.basis_risk_r2 >= 0.7 ? "Low basis risk" : c.basis_risk_r2 >= 0.5 ? "Moderate" : "High basis risk" },
+              // An R² of exactly 0 is what the backend emits when the
+              // asset-vs-hedge regression could not be run at all (too few
+              // overlapping sessions). A measured relationship, however weak,
+              // never lands on exactly zero. Labelling it "High basis risk"
+              // read as a measurement of a bad hedge instead of the absence
+              // of a measurement; the Data Quality panel carries the reason.
+              { label: "Basis Risk R²",
+                value: c.basis_risk_r2 === 0 ? "n/a" : c.basis_risk_r2.toFixed(2),
+                sub: c.basis_risk_r2 === 0
+                  ? "Not measured — see data quality"
+                  : c.basis_risk_r2 >= 0.7 ? "Low basis risk"
+                  : c.basis_risk_r2 >= 0.5 ? "Moderate" : "High basis risk" },
               { label: "Capital Eff. λ", value: `${c.lambda_leverage.toFixed(2)}×`, sub: "Protection / $ premium" },
               { label: "Max Protection", value: c.max_protection > 0 ? fmt$(c.max_protection) : "Unlimited", sub: `${Math.round(coveragePct * 100)}% of position covered` },
             ].map(({ label, value, sub }) => (
@@ -297,7 +612,24 @@ function CandidateCard({
             ))}
           </div>
 
+          <ProvenanceStrip c={c} />
+
           {/* Premium breakdown */}
+          {c.market_premium <= 0 && (
+            <div className="rounded-lg bg-amber-400/6 border border-amber-400/20 p-3">
+              <p className="text-[10px] font-semibold text-amber-300/70 uppercase tracking-widest mb-1.5">
+                Premium is a model estimate
+              </p>
+              <p className="text-[11px] text-amber-100/70 leading-relaxed">
+                No two-sided quote was available for this contract, so the{" "}
+                {fmt$(c.total_cost)} above is what the pricing model says it is worth —
+                not what it would cost to buy. Option quotes are only published while the
+                market is open (09:30–16:00 ET); re-run during market hours for executable
+                pricing before acting on this.
+              </p>
+            </div>
+          )}
+
           {c.market_premium > 0 && (
             <div className="rounded-lg bg-white/3 border border-white/6 p-3">
               <p className="text-[10px] font-semibold text-white/30 uppercase tracking-widest mb-2">Premium — market vs model</p>
@@ -458,9 +790,17 @@ function HoldingCard({ rec, meta }: { rec: HedgeRecommendation; meta: PositionMe
         const topCost = best
           ? (best.market_total_cost > 0 ? best.market_total_cost : best.total_cost)
           : 0;
+        // The VaR is scaled to the hedge horizon the user chose, so the label
+        // is read from the response rather than asserted. It used to read
+        // "1mo VaR (95%)" for what is by default a 180-day figure.
+        const horizonDays = ur.horizon_calendar_days ?? 0;
+        const varLabel = horizonDays > 0
+          ? `${horizonDays}d VaR (95%)`
+          : "VaR (95%)";
+        const horizonSub = horizonDays > 0 ? ` over ${horizonDays}d` : "";
         const items = [
-          { label: "1mo VaR (95%)",   val: `-${fmt$(ur.var_95)}`,           sub: `${fmtPct(ur.var_pct)} of notional` },
-          { label: "Exp. Shortfall",  val: `-${fmt$(ur.cvar_95)}`,           sub: "tail loss beyond VaR" },
+          { label: varLabel,          val: `-${fmt$(ur.var_95)}`,           sub: `${fmtPct(ur.var_pct)} of notional${horizonSub}` },
+          { label: "Exp. Shortfall",  val: `-${fmt$(ur.cvar_95)}`,           sub: `tail loss beyond VaR${horizonSub}` },
           { label: "Stress  -10% SPY", val: `-${fmt$(ur.stress_loss_10pct)}`, sub: `β ${ur.beta.toFixed(2)} vs SPY` },
           { label: "Stress  -20% SPY", val: `-${fmt$(ur.stress_loss_20pct)}`, sub: "severe drawdown scenario" },
         ];
@@ -485,6 +825,7 @@ function HoldingCard({ rec, meta }: { rec: HedgeRecommendation; meta: PositionMe
                 </div>
               ))}
             </div>
+            {rec.risk_provenance && <RiskBasisNote rp={rec.risk_provenance} />}
           </div>
         );
       })()}
@@ -542,6 +883,211 @@ function HoldingCard({ rec, meta }: { rec: HedgeRecommendation; meta: PositionMe
   );
 }
 
+// ─── Disclosure panels ────────────────────────────────────────────────────────
+
+/**
+ * What the recommended hedge costs against what the user allowed.
+ *
+ * This is the one number that answers "can I afford this?", and until the
+ * backend started summing the per-holding costs it was not in the response at
+ * all — the UI showed a premium per candidate and left the addition to the
+ * user. A net credit is shown as a credit rather than as negative spend,
+ * because being paid to put a collar on is not 0% budget usage, it is income.
+ */
+function BudgetBar({ result }: { result: HedgeOutput }) {
+  const { hedge_portfolio_cost: cost, hedge_budget_total: budget } = result;
+  if (budget <= 0) return null;
+
+  const credit = cost < 0;
+  const pct    = Math.min(Math.abs(result.hedge_budget_utilization) * 100, 100);
+  const overCap = result.hedge_budget_utilization > 1;
+
+  return (
+    <div className="border-t border-white/6 pt-4">
+      <div className="flex items-baseline justify-between mb-2">
+        <p className="text-[10px] font-semibold text-white/30 uppercase tracking-widest">
+          Hedge cost vs budget
+        </p>
+        <p className="text-xs font-mono">
+          <span className={credit ? "text-emerald-300" : overCap ? "text-red-300" : "text-white"}>
+            {credit ? `+${fmt$(Math.abs(cost))} credit` : fmt$(cost)}
+          </span>
+          <span className="text-white/25"> / {fmt$(budget)}</span>
+        </p>
+      </div>
+
+      <div className="h-1.5 rounded-full bg-white/6 overflow-hidden">
+        <div
+          className={`h-full rounded-full transition-all ${
+            credit ? "bg-emerald-500/70" : overCap ? "bg-red-500/70" : pct > 80 ? "bg-amber-500/70" : "bg-sky-500/70"
+          }`}
+          style={{ width: `${credit ? 100 : pct}%` }}
+        />
+      </div>
+
+      <p className="text-[11px] text-white/30 mt-1.5">
+        {credit
+          ? "This set is a net credit — the short legs more than finance the long ones."
+          : `${(result.hedge_budget_utilization * 100).toFixed(0)}% of the ${
+              (budget / Math.max(result.portfolio_notional, 1) * 100).toFixed(1)
+            }% cap you set. Premium is the mid-market estimate; fills may differ.`}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Market value, cost basis, and what the client claimed.
+ *
+ * The three are different numbers and were previously collapsed into one
+ * "Notional" chip. The server values the portfolio itself from current
+ * prices, so when the figure the client submitted disagrees the user should
+ * see both rather than silently getting the server's.
+ */
+function ValuationNote({ result }: { result: HedgeOutput }) {
+  const { portfolio_cost_basis: basis, portfolio_unrealized_pnl: pnl, declared_notional: declared } = result;
+  if (!basis && !pnl) return null;
+
+  const drift = declared != null && result.portfolio_notional > 0
+    ? Math.abs(declared - result.portfolio_notional) / result.portfolio_notional
+    : 0;
+
+  return (
+    <div className="border-t border-white/6 pt-4 space-y-2">
+      <p className="text-[10px] font-semibold text-white/30 uppercase tracking-widest">Valuation</p>
+      <div className="grid grid-cols-3 gap-3">
+        {[
+          { label: "Market value", val: fmt$(result.portfolio_notional), cls: "text-white" },
+          { label: "Cost basis",   val: fmt$(basis), cls: "text-white/60" },
+          {
+            label: "Unrealized",
+            val: `${pnl >= 0 ? "+" : "−"}${fmt$(Math.abs(pnl))}`,
+            cls: pnl >= 0 ? "text-emerald-300" : "text-red-300",
+          },
+        ].map(({ label, val, cls }) => (
+          <div key={label}>
+            <p className="text-[10px] text-white/30">{label}</p>
+            <p className={`text-sm font-mono font-semibold ${cls}`}>{val}</p>
+          </div>
+        ))}
+      </div>
+      {drift > 0.01 && (
+        <p className="text-[11px] text-amber-400/70 leading-relaxed">
+          The value you submitted ({fmt$(declared!)}) differs by {(drift * 100).toFixed(1)}% from
+          current market prices. Every figure here uses the market value.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The pipeline's own disclosures.
+ *
+ * Holdings left unhedged, candidates dropped for breaching the budget, stale
+ * or substituted data, a degraded regime. These were being overwritten in the
+ * orchestrator before they reached the response; they are the product's
+ * honesty and belong at the top of the result, not in a collapsed footer.
+ */
+function WarningsPanel({ warnings }: { warnings: string[] }) {
+  if (!warnings.length) return null;
+  return (
+    <div className="rounded-2xl border border-amber-400/20 bg-amber-400/6 p-4 space-y-2">
+      <p className="text-[10px] font-semibold text-amber-300/70 uppercase tracking-widest">
+        {warnings.length === 1 ? "Disclosure" : `${warnings.length} disclosures`}
+      </p>
+      <ul className="space-y-1.5">
+        {warnings.map((w, i) => (
+          <li key={i} className="text-xs text-amber-100/70 leading-relaxed flex gap-2">
+            <span className="text-amber-400/50 shrink-0">•</span>
+            <span>{w}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * Where the numbers came from.
+ *
+ * An empty ledger is reported as "not recorded", never as "all live" — the
+ * absence of a provenance record is not evidence of freshness, and in a
+ * product whose output is only as good as its market data, claiming the
+ * stronger of the two would be the single most misleading thing on screen.
+ */
+function DataQualityPanel({ dq }: { dq: DataQuality }) {
+  const counts   = dq.source_counts ?? {};
+  const total    = Object.values(counts).reduce((a, b) => a + b, 0);
+  const degraded = dq.degraded_fields ?? [];
+
+  if (total === 0) {
+    return (
+      <div className="border-t border-white/6 pt-4">
+        <p className="text-[10px] font-semibold text-white/30 uppercase tracking-widest mb-1.5">
+          Data sources
+        </p>
+        <p className="text-[11px] text-white/35 leading-relaxed">
+          No provenance was recorded for this run, so the freshness of these
+          figures cannot be confirmed from the response.
+        </p>
+      </div>
+    );
+  }
+
+  const tone: Record<string, string> = {
+    live:        "bg-emerald-500/10 text-emerald-300/80 border-emerald-500/20",
+    cache:       "bg-amber-400/10 text-amber-300/80 border-amber-400/20",
+    fallback:    "bg-orange-500/10 text-orange-300/80 border-orange-500/20",
+    unavailable: "bg-red-500/10 text-red-300/80 border-red-500/20",
+  };
+  const wording: Record<string, string> = {
+    live: "live", cache: "cached", fallback: "substituted", unavailable: "unavailable",
+  };
+
+  return (
+    <div className="border-t border-white/6 pt-4 space-y-2.5">
+      <div className="flex items-baseline justify-between">
+        <p className="text-[10px] font-semibold text-white/30 uppercase tracking-widest">Data sources</p>
+        {dq.generated_at && (
+          <p className="text-[10px] text-white/25 font-mono">
+            snapshot {new Date(dq.generated_at).toLocaleTimeString()}
+          </p>
+        )}
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        {Object.entries(counts)
+          .sort(([, a], [, b]) => b - a)
+          .map(([source, n]) => (
+            <span key={source}
+              className={`text-[11px] px-2.5 py-1 rounded-full border ${tone[source] ?? "bg-white/4 text-white/50 border-white/8"}`}>
+              {n} {wording[source] ?? source}
+            </span>
+          ))}
+      </div>
+
+      {degraded.length > 0 && (
+        <details className="group">
+          <summary className="text-[11px] text-white/40 hover:text-white/60 cursor-pointer list-none">
+            {degraded.length} value{degraded.length === 1 ? "" : "s"} were not live
+            <span className="text-white/25 group-open:hidden"> — show</span>
+          </summary>
+          <ul className="mt-2 space-y-1">
+            {degraded.map((d) => (
+              <li key={d.name} className="text-[11px] text-white/40 font-mono leading-relaxed">
+                {d.name}: {wording[d.source] ?? d.source}
+                {d.age_seconds != null && ` (~${Math.round(d.age_seconds / 60)} min old)`}
+                {d.detail && <span className="font-sans text-white/30"> — {d.detail}</span>}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
 // ─── Portfolio summary ────────────────────────────────────────────────────────
 
 function PortfolioSummary({ result }: { result: HedgeOutput }) {
@@ -558,9 +1104,21 @@ function PortfolioSummary({ result }: { result: HedgeOutput }) {
           {regimeLabel}
         </div>
 
+        {/* A regime inferred from a single VIX reading is not the same claim
+            as one fitted by the GMM, and it changes the regime-fit component
+            of every score below. The label alone read identically either
+            way. */}
+        {result.regime_degraded && (
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-amber-400/10 border border-amber-400/20"
+               title={result.regime_degradation_reason}>
+            <span className="text-[10px] text-amber-300/70">regime</span>
+            <span className="text-xs font-semibold text-amber-200/90">estimated</span>
+          </div>
+        )}
+
         {[
           { label: "VIX",       val: result.vix_level.toFixed(1) },
-          { label: "Notional",  val: fmt$(result.portfolio_notional) },
+          { label: "Value",     val: fmt$(result.portfolio_notional) },
           { label: "Holdings",  val: String(result.recommendations.length) },
           { label: "Computed",  val: result.run_time_seconds.toFixed(2) + "s" },
         ].map(({ label, val }) => (
@@ -570,6 +1128,13 @@ function PortfolioSummary({ result }: { result: HedgeOutput }) {
           </div>
         ))}
       </div>
+
+      {result.regime_degraded && result.regime_degradation_reason && (
+        <p className="text-[11px] text-amber-400/70 leading-relaxed">
+          Regime detection fell back to {result.regime_source.replace(/_/g, " ")}:{" "}
+          {result.regime_degradation_reason} Regime-dependent scores are less reliable than usual.
+        </p>
+      )}
 
       {/* LLM rate-limit notice */}
       {result.llm_notice && (
@@ -609,6 +1174,10 @@ function PortfolioSummary({ result }: { result: HedgeOutput }) {
         </div>
       )}
 
+      <ValuationNote result={result} />
+      <BudgetBar result={result} />
+      <DataQualityPanel dq={result.data_quality ?? {}} />
+
     </div>
   );
 }
@@ -618,6 +1187,79 @@ function PortfolioSummary({ result }: { result: HedgeOutput }) {
 function Spinner() {
   return (
     <div className="w-5 h-5 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
+  );
+}
+
+// ─── Error panel ──────────────────────────────────────────────────────────────
+
+/**
+ * What went wrong, and what the user can do about it.
+ *
+ * Every branch here says something different because the causes call for
+ * different actions, and because two of them are reassurances the user needs:
+ * a timeout and a server error both leave the question "did it do something?"
+ * open, and in a hedging product the honest answer — nothing was ordered,
+ * this is analysis only — belongs on screen rather than in the user's head.
+ */
+function ErrorPanel({ error, onRetry }: { error: UiError; onRetry: () => void }) {
+  const fieldMessages = Object.values(error.fields ?? {});
+  const serverFields  = Object.entries(error.serverFields ?? {});
+
+  const title =
+    error.kind === "timeout"     ? "Analysis timed out"
+    : error.kind === "offline"   ? "Can't reach the analysis server"
+    : error.kind === "validation"? "Check these positions"
+    : error.kind === "auth"      ? "Not authorized"
+    : error.kind === "unavailable" ? "A data source is unavailable"
+    : "Analysis failed";
+
+  const retryable = error.kind === "timeout" || error.kind === "offline" || error.kind === "server";
+
+  // The reference id the backend puts in its sanitised message is the only
+  // handle support has on the traceback, so it is pulled out and made
+  // selectable instead of being buried mid-sentence.
+  const ref = /Reference:\s*([0-9a-f]{6,})/i.exec(error.message)?.[1];
+  const body = ref ? error.message.replace(/\s*Reference:\s*[0-9a-f]{6,}\.?/i, "") : error.message;
+
+  return (
+    <div className="p-3.5 bg-red-500/8 border border-red-500/15 rounded-2xl space-y-2.5">
+      <p className="text-red-200/90 text-xs font-semibold">{title}</p>
+
+      {fieldMessages.length > 1 ? (
+        <ul className="text-red-300/75 text-xs leading-relaxed space-y-1 list-disc list-inside">
+          {fieldMessages.map((m, i) => <li key={i}>{m}</li>)}
+        </ul>
+      ) : (
+        <p className="text-red-300/75 text-xs leading-relaxed">{body}</p>
+      )}
+
+      {serverFields.length > 0 && (
+        <ul className="text-red-300/75 text-xs leading-relaxed space-y-1">
+          {serverFields.map(([path, msg]) => (
+            <li key={path}><span className="font-mono text-red-200/70">{path}</span> — {msg}</li>
+          ))}
+        </ul>
+      )}
+
+      {(error.kind === "timeout" || error.kind === "server") && (
+        <p className="text-white/35 text-[11px] leading-relaxed">
+          Nothing was ordered or executed — OptionQ only analyzes and never places trades.
+        </p>
+      )}
+
+      {ref && (
+        <p className="text-white/30 text-[11px]">
+          Reference <span className="font-mono text-white/50 select-all">{ref}</span> — quote this if you report the problem.
+        </p>
+      )}
+
+      {retryable && (
+        <button onClick={onRetry}
+          className="text-xs font-semibold text-red-200/80 hover:text-red-100 underline underline-offset-2">
+          Try again
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -633,6 +1275,24 @@ interface OptionFormRow {
   contracts: string; direction: "long" | "short"; premium_paid: string;
 }
 type PositionFormRow = StockFormRow | OptionFormRow;
+
+/**
+ * A failure the user can read.
+ *
+ * `kind` comes from the API client and decides what the panel offers: a
+ * timeout gets a retry, an unreachable backend gets the URL to check, a
+ * validation failure gets the field list. The old handler flattened every
+ * cause to one string, so "the server is not running" and "your strike is
+ * negative" looked identical and neither suggested a next step.
+ */
+interface UiError {
+  kind: string;
+  message: string;
+  /** Client-side, keyed by position row id. */
+  fields?: Record<number, string>;
+  /** Server-side (a 422), keyed by the backend's field path. */
+  serverFields?: Record<string, string>;
+}
 
 // ─── Toggle ───────────────────────────────────────────────────────────────────
 
@@ -793,7 +1453,20 @@ export default function Home() {
 
   const [result,  setResult]  = useState<HedgeOutput | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error,   setError]   = useState("");
+  const [error,   setError]   = useState<UiError | null>(null);
+
+  // The exact inputs the displayed result was computed from. Every figure on
+  // screen — VaR, premium, contract count, budget usage — belongs to one
+  // specific portfolio, and the form it was typed into keeps changing
+  // underneath it. Without this, editing 500 shares to 5,000 and not
+  // re-running left a VaR for 500 shares sitting beside a form that said
+  // 5,000, with nothing on screen to say which one the number described.
+  const [analyzedInputs, setAnalyzedInputs] = useState<string | null>(null);
+
+  // Lets a new run, or an unmount, cancel the one in flight. Without it a
+  // superseded request still resolved and overwrote the newer result.
+  const inFlight = useRef<AbortController | null>(null);
+  useEffect(() => () => inFlight.current?.abort(), []);
 
   const nextId = useCallback(() => Math.max(0, ...positions.map((p) => p.id)) + 1, [positions]);
 
@@ -832,11 +1505,130 @@ export default function Home() {
     };
   };
 
+  // Pure function of form state, so it is safe to serialise during render.
+  const currentInputs = useMemo(
+    () => JSON.stringify(buildPayload()),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [positions, totalNotional, hedgeHorizon, maxCostPct, protectionLevel, upsidePreserve],
+  );
+  const resultIsStale = result !== null && analyzedInputs !== null
+                        && analyzedInputs !== currentInputs;
+
+  /**
+   * Check the form before anything is sent.
+   *
+   * The backend validates too — Pydantic rejects a non-positive quantity and
+   * the pipeline refuses an empty portfolio — and these checks deliberately
+   * mirror those rules rather than replacing them. What they add is the
+   * timing and the wording: learning that a ticker box is blank should not
+   * cost a multi-second round trip, and "holdings.2.shares" is not a field
+   * the user can see. Anything that gets past here is still the server's call.
+   *
+   * `buildPayload` silently drops incomplete rows, so without this a
+   * half-filled position was analysed as though it had never been entered —
+   * the user got a hedge for two holdings after typing three.
+   */
+  const validate = (): UiError | null => {
+    if (positions.length === 0) {
+      return { kind: "validation", message: "Add at least one position to analyze." };
+    }
+
+    const today  = new Date().toISOString().split("T")[0];
+    const fields: Record<number, string> = {};
+
+    for (const pos of positions) {
+      const label = pos.ticker.trim()
+        ? pos.ticker.trim().toUpperCase()
+        : "This position";
+
+      if (!pos.ticker.trim()) {
+        fields[pos.id] = "Enter a ticker.";
+      } else if (pos.position_type === "stock") {
+        if (!(parseFloat(pos.shares) > 0))
+          fields[pos.id] = `${label}: share count must be greater than zero.`;
+        else if (!(parseFloat(pos.purchase_price) > 0))
+          fields[pos.id] = `${label}: purchase price must be greater than zero.`;
+      } else {
+        if (!(parseFloat(pos.strike) > 0))
+          fields[pos.id] = `${label}: strike must be greater than zero.`;
+        else if (!pos.expiry)
+          fields[pos.id] = `${label}: choose an expiry date.`;
+        else if (pos.expiry < today)
+          fields[pos.id] =
+            `${label}: expiry ${pos.expiry} has passed — an expired contract ` +
+            `carries no exposure to hedge.`;
+        else if (!(parseInt(pos.contracts, 10) > 0))
+          fields[pos.id] = `${label}: contract count must be at least 1.`;
+      }
+    }
+
+    const messages = Object.values(fields);
+    if (messages.length > 0) {
+      return {
+        kind: "validation",
+        message: messages.length === 1
+          ? messages[0]
+          : `${messages.length} positions need attention before the portfolio can be analyzed.`,
+        fields,
+      };
+    }
+
+    if (!(totalNotional > 0)) {
+      return {
+        kind: "validation",
+        message: "The portfolio works out to $0 — check the quantities and prices.",
+      };
+    }
+    return null;
+  };
+
   const analyze = async () => {
-    setLoading(true); setError(""); setResult(null);
-    try   { setResult(await api.analyzePortfolio(buildPayload())); }
-    catch (e: unknown) { setError(e instanceof Error ? e.message : "Analysis failed"); }
-    finally { setLoading(false); }
+    const invalid = validate();
+    if (invalid) {
+      setError(invalid);
+      // The form can no longer be turned into a valid portfolio, so whatever
+      // is on screen describes inputs the user has since broken. Leaving it
+      // rendered under the validation message paired real figures with a
+      // portfolio nobody can analyse.
+      setResult(null);
+      setAnalyzedInputs(null);
+      return;
+    }
+
+    inFlight.current?.abort();
+    const controller = new AbortController();
+    inFlight.current = controller;
+
+    setLoading(true); setError(null); setResult(null); setAnalyzedInputs(null);
+    try {
+      const payload = buildPayload();
+      const sent = JSON.stringify(payload);
+      setResult(await api.analyzePortfolio(payload, controller.signal));
+      // Set only after the result lands, and from the payload actually sent,
+      // so a form edited while the request was in flight reads as stale
+      // rather than as current.
+      setAnalyzedInputs(sent);
+    } catch (e: unknown) {
+      // A run the user cancelled, or one superseded by a newer one, is not a
+      // failure and must not paint an error over the next result.
+      if (controller.signal.aborted) return;
+      setError(
+        e instanceof ApiError
+          ? { kind: e.kind, message: e.message, serverFields: e.fieldErrors }
+          : { kind: "server", message: e instanceof Error ? e.message : "Analysis failed." },
+      );
+    } finally {
+      if (inFlight.current === controller) {
+        inFlight.current = null;
+        setLoading(false);
+      }
+    }
+  };
+
+  const cancelAnalysis = () => {
+    inFlight.current?.abort();
+    inFlight.current = null;
+    setLoading(false);
   };
 
   return (
@@ -965,11 +1757,17 @@ export default function Home() {
             {loading ? <><Spinner /><span>Analyzing…</span></> : "Analyze Portfolio"}
           </button>
 
-          {error && (
-            <div className="text-red-300/80 text-xs p-3.5 bg-red-500/8 border border-red-500/15 rounded-2xl leading-relaxed">
-              {error}
-            </div>
+          {/* A full run can take a minute or more. Leaving the user no way out
+              but a page reload — which loses the whole portfolio they typed —
+              is not an acceptable wait. */}
+          {loading && (
+            <button onClick={cancelAnalysis}
+              className="w-full py-2 text-xs font-medium text-white/40 hover:text-white/70 transition-colors">
+              Cancel
+            </button>
           )}
+
+          {error && <ErrorPanel error={error} onRetry={analyze} />}
         </aside>
 
         {/* ── Main results ── */}
@@ -1012,6 +1810,32 @@ export default function Home() {
           {/* Results */}
           {result && !loading && (
             <>
+              {/* Same reasoning as the warnings panel, one step stronger: if
+                  the figures below no longer describe the portfolio in the
+                  form, that has to be the first thing read, because it
+                  invalidates all of them at once. */}
+              {resultIsStale && (
+                <div data-testid="stale-results"
+                     className="rounded-xl border border-amber-400/30 bg-amber-400/8 px-4 py-3">
+                  <p className="text-sm text-amber-200/90 font-semibold">
+                    ⚠ These results describe the portfolio as it was when you ran the analysis
+                  </p>
+                  <p className="text-xs text-amber-200/60 mt-1 leading-relaxed">
+                    The form has changed since. Every figure below — risk, premiums,
+                    contract counts and budget usage — belongs to the earlier inputs.
+                    Re-run the analysis to price the portfolio you have now.
+                  </p>
+                  <button onClick={analyze}
+                    className="mt-2.5 text-xs font-semibold text-amber-200 hover:text-amber-100 underline underline-offset-2">
+                    Re-run analysis
+                  </button>
+                </div>
+              )}
+
+              {/* Above the summary deliberately: a holding left unhedged or a
+                  regime that had to be guessed changes how everything below
+                  should be read, so it cannot sit underneath it. */}
+              <WarningsPanel warnings={result.warnings ?? []} />
               <PortfolioSummary result={result} />
 
               {result.recommendations.length > 0 ? (
