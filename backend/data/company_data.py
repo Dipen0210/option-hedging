@@ -33,18 +33,6 @@ class CompanyInfo:
         else:
             return "micro_cap"
 
-    @property
-    def is_commodity_exposed(self) -> bool:
-        return self.sector in ("Energy", "Basic Materials")
-
-    @property
-    def is_rate_sensitive(self) -> bool:
-        return self.sector in ("Real Estate", "Utilities", "Financial Services")
-
-    @property
-    def is_defensive(self) -> bool:
-        return self.sector in ("Healthcare", "Consumer Defensive", "Utilities")
-
 
 @lru_cache(maxsize=1)
 def _load_all() -> Dict[str, CompanyInfo]:

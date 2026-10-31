@@ -77,31 +77,6 @@ class CombinedRegimeResult:
     realized_vol_20d: float
     vol_forecast_garch: float
 
-    # ── Diagnostic: per-model anomaly signal breakdown ────────────────────
-    @property
-    def main_vix_score(self) -> float:
-        return self.main.vix_anomaly_score
-
-    @property
-    def fast_vix_score(self) -> float:
-        return self.fast.vix_anomaly_score
-
-    @property
-    def main_gmm_score(self) -> float:
-        return self.main.gmm_anomaly_score
-
-    @property
-    def fast_gmm_score(self) -> float:
-        return self.fast.gmm_anomaly_score
-
-    @property
-    def fast_only_anomaly(self) -> bool:
-        return self.fast.is_anomaly and not self.main.is_anomaly
-
-    @property
-    def regime_diverged(self) -> bool:
-        return self.main.regime_label != self.fast.regime_label
-
     def summary(self) -> str:
         return (
             f"regime={self.regime_label}  anomaly={self.is_anomaly}  "
@@ -135,18 +110,6 @@ class CombinedRegimeDetector:
         result = self._fuse(main_r, fast_r, garch_vol_forecast)
         logger.info("[Combined] %s", result.summary())
         return result
-
-    def force_retrain_main(self) -> dict:
-        from backend.ml.regime.training_log import TrainingLog
-        summary = self._main.train(trigger="manual")
-        TrainingLog.append(summary)
-        return summary
-
-    def force_retrain_fast(self) -> dict:
-        from backend.ml.regime.training_log import TrainingLog
-        summary = self._fast.train(trigger="manual")
-        TrainingLog.append(summary)
-        return summary
 
     @staticmethod
     def _fuse(

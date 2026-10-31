@@ -50,9 +50,6 @@ class BaseSizer(ABC):
     """Abstract sizer.  Dispatch via SIZER_REGISTRY[asset_class]."""
     asset_class: str = ""
 
-    def can_size(self, candidate: "InstrumentCandidate") -> bool:
-        return candidate.asset_class == self.asset_class
-
     @abstractmethod
     def size(
         self,

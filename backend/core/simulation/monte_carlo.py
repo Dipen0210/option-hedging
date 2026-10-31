@@ -35,11 +35,6 @@ class MCResult:
         tail = self.pct_returns[self.pct_returns <= threshold]
         return float(tail.mean()) if len(tail) > 0 else threshold
 
-    def prob_below(self, drop_pct: float) -> float:
-        """Probability terminal price is ≥ drop_pct below S_0 (e.g. drop_pct=0.10 → -10%)."""
-        threshold = self.s0 * (1 - drop_pct)
-        return float(np.mean(self.terminal_prices < threshold))
-
     def expected_return(self) -> float:
         return float(self.pct_returns.mean())
 

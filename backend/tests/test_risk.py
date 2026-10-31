@@ -37,13 +37,6 @@ def test_company_market_cap_category():
     assert aapl.market_cap_category == "mega_cap"
 
 
-def test_company_sector_flags():
-    from backend.data.company_data import get_company
-    xom = get_company("XOM")
-    assert xom is not None
-    assert xom.is_commodity_exposed is True
-
-
 # -----------------------------------------------------------------------
 # VaR calculator tests (synthetic data — no network)
 # -----------------------------------------------------------------------
@@ -191,38 +184,6 @@ def test_tail_correlation_higher_in_crash():
     full_corr = float(np.corrcoef(ra.values, rb.values)[0, 1])
     tail_corr = calc.tail_correlation(ra, rb, percentile=0.05)
     assert tail_corr > full_corr
-
-
-# -----------------------------------------------------------------------
-# Hedge ratio tests (pure math — no network)
-# -----------------------------------------------------------------------
-
-def test_delta_adjusted_contracts():
-    from backend.core.risk.hedge_ratio import HedgeRatioCalculator
-    calc = HedgeRatioCalculator()
-    # N = (β × V × target%) / (|Δ| × contract_size × S)
-    # N = (1.2 × 600000) / (0.25 × 100 × 261) = 720000 / 6525 ≈ 110.3 → 110
-    n = calc.delta_adjusted_contracts(600_000, 1.2, 0.25, 100, 261.0)
-    assert n == 110
-
-
-def test_beta_weighted_portfolio():
-    from backend.core.risk.hedge_ratio import HedgeRatioCalculator
-    calc = HedgeRatioCalculator()
-    # N* = βp × (V / contract_value) × target%
-    # N* = 1.1 × (500000 / 220000) = 1.1 × 2.2727 ≈ 2.5 → rounds to 2 or 3
-    n = calc.beta_weighted_portfolio(1.1, 500_000, 220_000)
-    assert n in (2, 3)
-
-
-def test_partial_hedge_series():
-    from backend.core.risk.hedge_ratio import HedgeRatioCalculator
-    calc = HedgeRatioCalculator()
-    series = calc.partial_hedge_series(10, steps=[0.5, 1.0], premium_per_contract=500)
-    assert len(series) == 2
-    assert series[0]["n_contracts"] == 5
-    assert series[1]["n_contracts"] == 10
-    assert series[1]["estimated_cost"] == 5000.0
 
 
 # -----------------------------------------------------------------------

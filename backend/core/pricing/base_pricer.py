@@ -7,7 +7,6 @@ BaseAssetPricer — ABC that each per-asset pricer implements
 """
 from __future__ import annotations
 
-import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import date
@@ -68,14 +67,6 @@ class PriceResult:
     extended: Dict[str, float] = field(default_factory=dict)
     model_used: str = ""
 
-    def is_valid(self) -> bool:
-        """
-        A usable price. Negative is allowed: a collar can be a net credit, and
-        rejecting that sign would discard a structure the user is paid to put
-        on. Only a non-finite price is invalid.
-        """
-        return math.isfinite(self.price)
-
 
 class BaseAssetPricer(ABC):
     """
@@ -83,9 +74,6 @@ class BaseAssetPricer(ABC):
     The engine dispatches via PRICER_REGISTRY[asset_class].
     """
     asset_class: str = ""
-
-    def can_price(self, candidate: "InstrumentCandidate") -> bool:
-        return candidate.asset_class == self.asset_class
 
     @abstractmethod
     def price(

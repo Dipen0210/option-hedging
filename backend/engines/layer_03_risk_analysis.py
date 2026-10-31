@@ -40,10 +40,8 @@ class RiskAnalysisEngine:
     def __init__(self):
         from backend.core.risk.factor_decomposer import FactorDecomposer
         from backend.core.risk.var_calculator import VaRCalculator
-        from backend.core.risk.hedge_ratio import HedgeRatioCalculator
         self.decomposer = FactorDecomposer()
         self.var_calc   = VaRCalculator()
-        self.hr_calc    = HedgeRatioCalculator()
 
     def analyze(
         self,

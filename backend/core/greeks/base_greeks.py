@@ -35,9 +35,6 @@ class BaseGreeksEngine(ABC):
     """Abstract Greeks engine. Dispatch via GREEKS_REGISTRY[asset_class]."""
     asset_class: str = ""
 
-    def can_compute(self, candidate: "InstrumentCandidate") -> bool:
-        return candidate.asset_class == self.asset_class
-
     @abstractmethod
     def compute(
         self,

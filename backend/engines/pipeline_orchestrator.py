@@ -638,36 +638,3 @@ class HedgeOrchestrator:
             hedge_output.run_time_seconds,
         )
         return hedge_output
-
-    # ── Phase 2 stub ──────────────────────────────────────────────────────────
-
-    def _run_options_hedge(
-        self,
-        portfolio: PortfolioInput,
-        pipeline_start: float,
-    ) -> HedgeOutput:
-        """
-        Phase 2: Greek-neutralisation pipeline for existing options positions.
-
-        Will compute net delta/gamma/vega of the user's options book and
-        recommend offsetting options to neutralise target Greeks.
-
-        Not yet implemented — returns a clear not-supported response.
-        """
-        logger.info("Options-position hedging requested — Phase 2 stub.")
-        elapsed = round(time.perf_counter() - pipeline_start, 3)
-        return HedgeOutput(
-            portfolio_notional=portfolio.total_notional or 0.0,
-            regime="unknown",
-            is_anomaly=False,
-            vix_level=0.0,
-            recommendations=[],
-            run_time_seconds=elapsed,
-            portfolio_summary=(
-                "Options position hedging (Greek neutralisation) is coming in Phase 2. "
-                "Currently supported: stock position hedging via equity options."
-            ),
-            key_risks=[],
-            regime_commentary="",
-            top_recommendation="",
-        )
