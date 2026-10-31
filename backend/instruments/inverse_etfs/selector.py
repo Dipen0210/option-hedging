@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 class InverseETFSelector(InstrumentSelector):
 
+    label = "inverse ETFs"
+    implemented = False
+
     def is_applicable(self, profile: RiskProfile, regime: RegimeState) -> bool:
         # Only apply for short-term hedges (≤ 30 days) to avoid rebalancing drag
         return profile.asset_class == "equity"

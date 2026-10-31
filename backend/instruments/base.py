@@ -19,6 +19,22 @@ class InstrumentSelector(ABC):
     override `price_candidate` for custom pricing logic.
     """
 
+    #: What to call this instrument class in a user-facing disclosure.
+    label: str = "instrument"
+
+    #: False for a declared stub whose `find_candidates` returns [] without
+    #: evaluating anything.
+    #:
+    #: This is not documentation. An empty candidate list from a stub and an
+    #: empty one from a selector that priced every listed contract and
+    #: rejected them are the same value, and the pipeline used to report both
+    #: as "no hedge fits the cost budget and liquidity constraints" — naming a
+    #: financial cause for a search that never ran. A caller of
+    #: POST /instruments/futures was told futures hedging was too expensive
+    #: for their portfolio when no future had been looked at. L4 reads this
+    #: flag so it can say which of the two actually happened.
+    implemented: bool = True
+
     @abstractmethod
     def find_candidates(
         self,

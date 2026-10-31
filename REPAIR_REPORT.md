@@ -838,14 +838,18 @@ nothing is pushed and nothing is deployed. See R5 in §C.
 
 | ~~R7~~ | ~~Single-stock return data shows an implausibly weak correlation structure.~~ **CLOSED — and it was never a defect.** Root-caused, not explained away. Two things were conflated. **(a) The data is right.** The product's return series is **byte-identical** to an independent recompute straight from the raw Yahoo JSON — `maxdiff = 0.00e+00` for both the AAPL and the SPY leg — so no stage of the pipeline is distorting it. **(b) The window is the whole story.** `LOOKBACK_DAYS = 252` is what the product actually fits on; the same two series over 500 sessions give AAPL/SPY R²=**0.354**, ρ=**+0.595**, β=**1.03**. Single-stock/index correlation genuinely collapsed over the trailing twelve months — XOM/SPY flips **+0.115 → −0.329** between the two windows — while index-replication pairs are window-invariant by construction (VOO/SPY 0.994 → 0.996). Mega-cap dispersion, correctly measured. And correctly *gated*: SPY is **rejected** as an AAPL cross hedge at R²=0.084 < `MIN_CROSS_R2 = 0.30`, which is the system declining to sell a hedge it cannot justify. | — | The anomaly was real, the alarm was right to raise it, and the answer is that a 252-day ρ of 0.29 is what AAPL/SPY *was* over this particular year. Pinned by the live-provider suite, which asserts both legs carry identical dates and 501 observations. |
 | ~~R8~~ | ~~Zero-share and similar edits re-run against a stale result view.~~ **CLOSED**, and root-caused past the reported symptom: *any* unre-run edit left real figures beside inputs they did not describe — editing 500 shares to 5,000 left a VaR for 500 shares on screen with nothing to say which portfolio it belonged to. The page now records the exact payload each result was computed from, flags divergence with a banner and a re-run button, and clears the result outright when the form can no longer be analysed. Browser-verified, 28/0. | — | The reported case was a validation-path instance of a general staleness problem. |
+| R9 | **L11 is asked to narrate an empty candidate set, and invents a figure doing it.** On a stub-only run (0 candidates) the LLM wrote `top_recommendation` = *"No candidates are currently available to hedge the $30,000 AAPL position"* for a portfolio whose `portfolio_notional` is **$40,000** — apparently 200 shares x the $150 **purchase** price rather than the market price. A wrong dollar figure in the headline field of the response is a fabricated financial result. | **P1** | Found 2026-10-30 while verifying the stub-disclosure fix over HTTP; not fixed in that commit. The root cause is asking a model to summarise nothing — the repair spec's *"do not force a recommendation when no valid hedge exists"*. It is non-deterministic: a second run of the same request produced a figure-free sentence, so a regression test has to pin the *path* (L11 not invoked, or its numbers validated) rather than the text. |
 
-**No P0 defect remains open, and R6 is the only item still open.** R1, R2, R3,
-R4, R5, R7 and R8 are closed — R1, R3 and R7 by investigation, R2 by a decision
+**No P0 defect remains open. R6 and R9 are the two items still open.** R1, R2,
+R3, R4, R5, R7 and R8 are closed — R1, R3 and R7 by investigation, R2 by a decision
 now implemented and tested, R4 and R8 by repair, R5 by committing. R6 (warning
 density out of market hours) stays open by judgement: grouping fixed the
 duplication, the market-open run showed most of the remaining volume was
 genuinely degraded pre-market data, and reducing it further risks hiding
-things.
+things. R9 (an LLM-authored dollar figure that does not match the computed
+notional) was opened on 2026-10-30 by the HTTP verification of the
+stub-disclosure fix, and is a correctness defect in user-facing text rather
+than in a calculation.
 
 **One P0 was found and closed after that sentence was first written**, and the
 sequence is the point. R5 was closed by committing the repair; building the
@@ -1627,3 +1631,109 @@ was not implausible at all, and the gate still did the right thing with it.
 **Closed. Not a defect.** The alarm was correct to raise it, the previous
 cycle was correct not to hand-wave it, and the answer is that a 252-day
 AAPL/SPY ρ of 0.29 is what that year was.
+
+## Appendix — the stub endpoints that named a financial cause, found 2026-10-30
+
+A ⑤ silent-substitution defect, surfaced by the structure cleanup above: four
+public endpoints explained an empty result with a reason that had not been
+measured.
+
+### What the user was told
+
+`POST /instruments/futures` on a single-holding AAPL portfolio returned
+HTTP 200 and this warning:
+
+> AAPL: No hedge for AAPL fits the cost budget and liquidity constraints;
+> the position is shown unhedged.
+
+That is a financial finding. It says a search was run, contracts were priced
+against the user's budget, liquidity was assessed, and nothing cleared. None
+of it happened. `FuturesSelector.find_candidates` returns `[]` immediately —
+it is a declared stub. No future was looked up, no budget consulted, no quote
+fetched. A user acting on that sentence would conclude futures hedging is
+uneconomic for their portfolio, which the product has no basis to claim. The
+same text was returned by `/forwards`, `/swaps` and `/inverse-etfs`.
+
+The OpenAPI descriptions compounded it: `/docs` advertised *"Hedge candidates
+using index / commodity / treasury futures"* for an endpoint that evaluates
+nothing — a ④ asserted label.
+
+### Root cause
+
+An empty candidate list has several possible causes and they are the same
+value. `[]` from a stub and `[]` from a selector that priced every listed
+contract and rejected them are indistinguishable downstream.
+
+The warning came from `pipeline_orchestrator._drop_unsizeable`, whose actual
+job is to remove candidates L7 could not size. It emitted the budget sentence
+on `if not kept:` — true whenever a holding ended with no candidates,
+including when `dropped == 0` and nothing had ever been priced. The function
+was reporting on a filtering step it had not performed.
+
+### The fix
+
+`InstrumentSelector` now declares what it is: a `label` for user-facing text
+and `implemented: bool`, set `False` on the four stubs. L4's
+`_select_for_holding` returns which instrument classes were *evaluated*,
+which are *unbuilt*, and which *raised*, and emits the warning that is true:
+
+| What happened | What the user is told |
+|---|---|
+| Selector searched, found nothing | "no hedge candidate was found among the instrument types evaluated (options)" |
+| Selector is a stub | "hedging with futures is not implemented in this version — no instrument was evaluated" |
+| No selector applies to the asset class | "no instrument type in this run applies to this equity holding" |
+| Selector raised | "hedge selection failed for futures. The error was logged" |
+| Candidates priced, all unsizeable | the original cost-and-liquidity sentence — now only here |
+
+`_drop_unsizeable` is gated on `if dropped and not kept:`, so it speaks only
+about candidates it actually dropped. The four endpoint docstrings now state
+non-implementation. Exception text stays in the log; responses carry none.
+
+### Two further defects the regression test caught in the fix itself
+
+1. `selector.label` was read inside the `try` that wraps `find_candidates`, so
+   a selector injected by a caller or a test — which need only satisfy the
+   two-method protocol — was reported to the user as a *failed* selector
+   because of a missing attribute. Hoisted out and read via `getattr`.
+2. A selector that genuinely raised produced "nothing applies", hiding an
+   error behind a statement about applicability. Failures now get their own
+   disclosure, emitted even when another instrument class did produce a hedge,
+   so a partial run cannot read as a complete one.
+
+### Verification
+
+`backend/tests/test_unbuilt_instrument_disclosure.py` — 14 tests covering all
+five cases above plus the stub declarations themselves. **12 of the 14 fail
+against the pre-fix tree** (verified by stashing the source fix and re-running);
+the 2 that pass both ways are the guards on the honest case, which had to keep
+working. Full suite: **783 passed, 31 skipped**.
+
+Behaviour verified over HTTP against the synthetic market, not by inspection:
+
+| Endpoint | Candidates | What it says |
+|---|---|---|
+| `/instruments/options` | 4 | recommends a 2027-02-19 direct put, 1325 USD, 12.6% of VaR |
+| `/instruments/futures` | 0 | "not implemented in this version — no instrument was evaluated" |
+| `/instruments/inverse-etfs` | 0 | "not implemented in this version — no instrument was evaluated" |
+| `/instruments/forwards` | 0 | "no instrument type in this run applies to this equity holding" |
+| `/instruments/swaps` | 0 | "no instrument type in this run applies to this equity holding" |
+
+(`forwards` and `swaps` stop earlier, at `is_applicable`, which is False for a
+single equity holding — so the applicability reason is the true one there, and
+non-implementation is never reached.)
+
+### Status
+
+**Fixed.** The false cost-and-liquidity claim no longer appears on any path
+where cost and liquidity were not measured.
+
+### Discovered while verifying this, still open
+
+With zero candidates, L11 is still asked to write `top_recommendation`, and in
+one run it produced *"No candidates are currently available to hedge the
+$30,000 AAPL position"* for a portfolio whose `portfolio_notional` is
+**$40,000** — the LLM appears to have multiplied the purchase price rather
+than the market price. A wrong dollar figure in the headline field of the
+response is a fabricated financial result. Logged in §C and fixed separately;
+the repair spec's *"do not force a recommendation when no valid hedge exists"*
+points at the root cause, which is asking a model to narrate an empty set.

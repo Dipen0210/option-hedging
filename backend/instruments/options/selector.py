@@ -163,6 +163,8 @@ UPSIDE_STRIKE_MAP = [
 
 class OptionsSelector(InstrumentSelector):
 
+    label = "options"
+
     def find_candidates(
         self,
         profile: RiskProfile,

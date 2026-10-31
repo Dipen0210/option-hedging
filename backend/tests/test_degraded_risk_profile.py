@@ -290,4 +290,20 @@ class TestSelectionDeclinesOnUnavailableProfile:
         # Selection ran for the healthy holding and was never attempted for
         # the flagged one.
         assert recorder.asked == ["SPY"]
-        assert all("SPY" not in w for w in out.warnings)
+
+        # SPY must not be tarred with AAPL's failure. It is, separately,
+        # entitled to a disclosure of its own: the recorder returns nothing,
+        # and an empty candidate list is now always explained rather than
+        # left to read as "no hedge was worth recommending". The two must not
+        # be confused, which is what this asserts — the earlier form of this
+        # test asserted SPY appeared in no warning at all, and that would
+        # pass just as well if SPY's own empty result were silently dropped.
+        spy_warnings = [w for w in out.warnings if "SPY" in w]
+        assert len(spy_warnings) == 1, out.warnings
+        assert "no price history" not in spy_warnings[0]
+        assert "AAPL" not in spy_warnings[0]
+        assert "unhedged" in spy_warnings[0].lower()
+
+        aapl_warnings = [w for w in out.warnings if "AAPL" in w]
+        assert len(aapl_warnings) == 1, out.warnings
+        assert "no price history for AAPL" in aapl_warnings[0]

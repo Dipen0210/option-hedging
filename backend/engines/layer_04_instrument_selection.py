@@ -17,7 +17,7 @@ Asset classes:
 """
 import logging
 import time
-from typing import List
+from typing import List, Tuple
 
 from backend.models.portfolio_models import PortfolioInput
 from backend.models.risk_models import RegimeState, PortfolioRiskSummary
@@ -91,10 +91,45 @@ class InstrumentSelectionEngine:
                 continue
 
             logger.info(f"Selecting instruments for {ticker} ({profile.asset_class})...")
-            candidates = self._select_for_holding(profile, portfolio, regime)
+            candidates, evaluated, unbuilt, failed = self._select_for_holding(
+                profile, portfolio, regime
+            )
 
-            if not candidates:
+            # A selector that raised is an error, not an absence, and it is
+            # disclosed even when another instrument class did produce a
+            # hedge — otherwise a partial run looks like a complete one. The
+            # exception text itself stays in the log; responses carry none.
+            if failed:
+                warnings.append(
+                    f"{ticker}: hedge selection failed for "
+                    f"{', '.join(failed)}. The error was logged; any hedge "
+                    f"shown for this holding comes from the other instrument "
+                    f"types only."
+                )
+
+            if not candidates and not failed:
                 logger.warning(f"No viable candidates found for {ticker}")
+                # Several different facts produce an empty list, and the user
+                # is owed the one that is true. Naming no cause is better
+                # than naming the wrong one.
+                if evaluated:
+                    warnings.append(
+                        f"{ticker}: no hedge candidate was found among the "
+                        f"instrument types evaluated ({', '.join(evaluated)}). "
+                        f"This holding is shown unhedged."
+                    )
+                elif unbuilt:
+                    warnings.append(
+                        f"{ticker}: hedging with {', '.join(unbuilt)} is not "
+                        f"implemented in this version — no instrument was "
+                        f"evaluated. This holding is shown unhedged."
+                    )
+                else:
+                    warnings.append(
+                        f"{ticker}: no instrument type in this run applies to "
+                        f"this {profile.asset_class} holding. It is shown "
+                        f"unhedged."
+                    )
 
             recommendations.append(HedgeRecommendation(
                 rank=i + 1,
@@ -215,26 +250,46 @@ class InstrumentSelectionEngine:
         profile,
         portfolio: PortfolioInput,
         regime: RegimeState,
-    ) -> List[InstrumentCandidate]:
+    ) -> Tuple[List[InstrumentCandidate], List[str], List[str], List[str]]:
         """
         Run all applicable selectors for a single holding and merge results.
+
+        Returns the candidates, then the labels of the selectors that
+        evaluated this holding, those that were applicable but unbuilt, and
+        those that raised. The caller needs the last three to explain an
+        empty list without inventing a reason for it, and to disclose a
+        selector error instead of swallowing it.
 
         Direction rule (safety net — also enforced in each selector):
           direct_hedge candidates MUST have delta opposite to the user's position.
           Same-direction same-asset suggestions are never valid hedges.
         """
         all_candidates: List[InstrumentCandidate] = []
+        evaluated: List[str] = []
+        unbuilt: List[str] = []
+        failed: List[str] = []
 
         for selector in self.selectors:
+            # getattr, not attribute access: a selector injected by a caller
+            # or a test need only satisfy the two-method protocol, and reading
+            # `.label` inside the try below would turn a missing attribute
+            # into a reported selector failure.
+            label = getattr(selector, "label", "instrument")
             try:
                 if not selector.is_applicable(profile, regime):
                     continue
+                if not getattr(selector, "implemented", True):
+                    unbuilt.append(label)
+                    continue
                 candidates = selector.find_candidates(profile, portfolio, regime)
-                all_candidates.extend(candidates)
             except Exception as e:
+                failed.append(label)
                 logger.error(
                     f"{selector.__class__.__name__} failed for {profile.ticker}: {e}"
                 )
+                continue
+            evaluated.append(label)
+            all_candidates.extend(candidates)
 
         # Direction validation: for direct hedges, delta sign must be opposite
         user_sign = getattr(profile, "effective_delta_sign", 1)   # default +1 (long stock)
@@ -263,4 +318,4 @@ class InstrumentSelectionEngine:
                 seen.add(key)
                 unique.append(c)
 
-        return unique[:MAX_CANDIDATES_PER_HOLDING]
+        return unique[:MAX_CANDIDATES_PER_HOLDING], evaluated, unbuilt, failed

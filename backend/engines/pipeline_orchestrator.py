@@ -206,7 +206,12 @@ class HedgeOrchestrator:
                     dropped, rec.asset_ticker,
                 )
             rec.candidates = kept
-            if not kept:
+            # Only when candidates existed here and sizing removed them is the
+            # budget the reason. A holding that arrived with none was never
+            # priced against a budget or a quote, and L4 has already said why
+            # — claiming cost and liquidity for that case asserted a financial
+            # finding from a search that never ran.
+            if dropped and not kept:
                 hedge_output.warnings.append(
                     f"No hedge for {rec.asset_ticker} fits the cost budget and "
                     f"liquidity constraints; the position is shown unhedged."

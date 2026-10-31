@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 class FuturesSelector(InstrumentSelector):
 
+    label = "futures"
+    implemented = False
+
     def is_applicable(self, profile: RiskProfile, regime: RegimeState) -> bool:
         # Futures are applicable to equity (index futures), bond, and commodity
         return profile.asset_class in ("equity", "bond", "commodity")

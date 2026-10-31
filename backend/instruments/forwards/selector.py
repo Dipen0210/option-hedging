@@ -20,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 class ForwardsSelector(InstrumentSelector):
 
+    label = "forwards"
+    implemented = False
+
     def is_applicable(self, profile: RiskProfile, regime: RegimeState) -> bool:
         return profile.asset_class in ("fx", "commodity")
 
