@@ -1,0 +1,26 @@
+# Development and test dependencies.
+#
+# Runtime pins live in backend/requirements.txt and are included rather than
+# duplicated: the two files had drifted apart, so the container could install a
+# different set from the one developed against.
+#
+# Removed from this file, because nothing in backend/ imports them:
+#   torch==2.4.1, transformers==4.44.2  — ~2.5GB of unused NLP stack
+#   alpaca-trade-api==3.3.0             — no execution path exists; OptionQ
+#                                         does not place trades, and this
+#                                         package pins incompatible
+#                                         pydantic/urllib3 versions
+#   hdbscan==0.8.40                     — regime detection uses sklearn GMM
+#   plotly==5.24.1                      — all charting is client-side
+#   sqlalchemy, aiosqlite                — the response cache uses stdlib sqlite3
+#   feedparser, pandas-datareader        — no importer
+# None of these were installed in the environment the suite passes in, so they
+# were listed but unverified.
+
+-r requirements.txt
+
+# Testing
+pytest==9.2.0
+pytest-asyncio==1.4.1
+pytest-cov==7.1.0
+httpx==0.28.1          # required by fastapi.testclient

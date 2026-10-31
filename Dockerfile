@@ -8,7 +8,7 @@ WORKDIR /app
 
 # Runtime dependencies only — no torch/transformers/test deps.
 # Copied on its own so the layer is cached independently of source changes.
-COPY api/requirements.txt requirements.txt
+COPY backend/requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Backend package and trained ML models.

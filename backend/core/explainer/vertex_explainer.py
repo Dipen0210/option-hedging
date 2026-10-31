@@ -9,7 +9,7 @@ API, so this is `GeminiExplainer` with two things changed and nothing else:
   * **The credential.** Vertex has no API key. Every call carries an OAuth
     bearer token, which is why this is the one provider that needs a library:
     `google-auth` resolves Application Default Credentials and signs the
-    token. See api/requirements.txt for why the heavier SDKs were rejected.
+    token. See backend/requirements.txt for why the heavier SDKs were rejected.
 
 Everything that was hard to get right — the retry policy, the `thinkingBudget`
 defence against an empty 200, the empty-response reporting, the refusal

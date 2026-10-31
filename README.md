@@ -101,20 +101,46 @@ Cross-hedges (positively correlated ETFs) and macro hedges (GLD, TLT) are genera
 
 ## Running Locally
 
-**Backend**
+**Backend** — run from the repository root, not from `backend/`. Every import
+is absolute (`from backend.config import ...`), so the root must be on the path;
+`cd backend && uvicorn main:app` fails with `No module named 'backend'`.
+
 ```bash
-cd backend
-source .venv/bin/activate
-uvicorn main:app --reload --port 8000
+cp backend/.env.example backend/.env    # then fill it in
+backend/.venv/bin/uvicorn backend.main:app --reload --port 8000
 ```
 
 **Frontend**
 ```bash
-cd frontend
-npm run dev
+cp frontend/.env.example frontend/.env.local
+cd frontend && npm run dev
 ```
 
 Frontend runs at `http://localhost:3000`, backend at `http://localhost:8000`.
+The two are wired to each other from both sides: the frontend's
+`NEXT_PUBLIC_API_URL` must point at the backend, and that origin must also
+appear in the backend's `FRONTEND_URL`, or the browser's preflight is refused
+and the Analyze button appears to do nothing.
+
+**Tests**
+```bash
+backend/.venv/bin/python -m pytest backend/tests -q
+```
+
+---
+
+## Deployment
+
+The backend is a container on Cloud Run; the frontend is a static export on
+Vercel. There is no serverless backend and no Next.js server — see
+[`DEPLOYMENT.md`](DEPLOYMENT.md) for the runbook, the configured Cloud Run
+shape and why each value is what it is, and the known open problems.
+
+```bash
+PROJECT_ID=... FRONTEND_URL=https://... scripts/deploy_backend.sh   # plan only
+```
+
+The script prints its plan and deploys nothing unless given `--execute`.
 
 ---
 

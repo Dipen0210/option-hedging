@@ -478,7 +478,7 @@ class TestDeploymentConfiguration:
 
     def test_dockerfile_installs_the_tested_runtime_requirements(self):
         text = (self._repo_root() / "Dockerfile").read_text()
-        assert "api/requirements.txt" in text
+        assert "backend/requirements.txt" in text
         # The heavy unused stack must not come back into the image. Comments
         # are exempt: the Dockerfile names these to record why they are gone.
         instructions = "\n".join(
@@ -509,7 +509,7 @@ class TestDeploymentConfiguration:
         # torch/transformers/hdbscan/alpaca-trade-api/plotly were pinned but
         # imported nowhere, and were not installed in the environment the suite
         # passes in — listed, never verified.
-        text = (self._repo_root() / "api" / "requirements.txt").read_text().lower()
+        text = (self._repo_root() / "backend" / "requirements.txt").read_text().lower()
         for pkg in ("torch", "transformers", "hdbscan", "alpaca", "plotly",
                     "sqlalchemy", "aiosqlite", "feedparser", "datareader"):
             # Mentions in comments are fine; a requirement line is not.

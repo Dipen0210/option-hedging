@@ -197,12 +197,20 @@ async def check_hedge_triggers(req: HedgeCheckRequest):
 @cron_router.get("/cron/retrain-fast")
 async def cron_retrain_fast():
     """
-    Vercel Cron endpoint — daily fast model retrain.
+    Scheduled daily retrain of the fast (6mo) model, for an external scheduler.
 
-    Requires `Authorization: Bearer $CRON_SECRET`. Enforced by `require_cron`
-    on `cron_router`, which refuses the call when CRON_SECRET is unset instead
-    of allowing an unauthenticated retrain.
-    Schedule: 0 2 * * * (02:00 UTC daily)
+    Reachable by GET so a scheduler that only issues GETs can call it; that is
+    why it carries its own credential. Requires
+    `Authorization: Bearer $CRON_SECRET`, enforced by `require_cron` on
+    `cron_router`, which refuses the call when CRON_SECRET is unset rather than
+    allowing an unauthenticated retrain.
+
+    Schedule: 0 2 * * * (02:00 UTC daily), as Cloud Scheduler — the in-process
+    APScheduler in backend/ml/regime/scheduler.py already runs this on a
+    long-lived instance, so the external job is only needed where the service
+    scales to zero. Note that a retrain writes to backend/ml_models in the
+    container's writable layer and so does not outlive the instance; see the
+    instance-count comment in scripts/deploy_backend.sh.
     """
     return await retrain_fast()
 
@@ -210,9 +218,12 @@ async def cron_retrain_fast():
 @cron_router.get("/cron/retrain-main")
 async def cron_retrain_main():
     """
-    Vercel Cron endpoint — monthly main model retrain.
+    Scheduled monthly retrain of the main (10yr) model, for an external
+    scheduler.
 
-    Requires `Authorization: Bearer $CRON_SECRET`; see `cron_retrain_fast`.
+    Requires `Authorization: Bearer $CRON_SECRET`; see `cron_retrain_fast` for
+    the credential and for what a retrain does and does not persist.
+
     Schedule: 0 2 1 * * (02:00 UTC on the 1st)
     """
     return await retrain_main()

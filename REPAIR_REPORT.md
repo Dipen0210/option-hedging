@@ -476,7 +476,7 @@ a correctness or disclosure defect.
 `backend/core/explainer/response_parsers.py` (new),
 `backend/core/explainer/base_explainer.py`,
 `backend/core/explainer/__init__.py`, `backend/config/settings.py`,
-`backend/.env.example`, `api/requirements.txt`,
+`backend/.env.example`, `backend/requirements.txt`,
 `backend/tests/test_gemini_explainer.py` (new),
 `backend/tests/test_vertex_explainer.py` (new)
 
@@ -743,7 +743,7 @@ ever changes.
 `backend/api/routes_portfolio.py`, `backend/api/routes_hedge.py`,
 `backend/main.py`, `backend/config/settings.py`, `Dockerfile`,
 `.dockerignore`, `backend/.env.example`, `backend/requirements.txt`,
-`api/requirements.txt`
+`backend/requirements-dev.txt`
 
 **Pinned by:** `test_security.py` (9 classes)
 
@@ -1831,3 +1831,123 @@ input — and **18 of its 23 tests fail** when the six source files are
 reverted, against a suite of 812 that passed through every one of the
 defects. The 5 that survive the revert are the controls, which is the point:
 they are the assertions the old suite was making.
+
+---
+
+## Appendix — packaging the two halves for deployment, 2026-10-31
+
+Four things were asked for: wrap the repository around `backend/` and
+`frontend/`, prepare the deployment, remove what is redundant, and leave the
+three deployment problems alone for now. **Nothing was deployed** — see the end
+of this appendix.
+
+### The leftover `api/` directory
+
+A `api/requirements.txt` survived the deletion of the serverless backend
+(commit `17258a4`) and had become the file the container actually installs,
+while `backend/requirements.txt` held the test dependencies. So the
+runtime closure lived outside the package it serves, under the name of a
+directory whose purpose had been deleted. Consolidated:
+
+| Was | Now | Holds |
+|---|---|---|
+| `api/requirements.txt` | `backend/requirements.txt` | the runtime closure the image installs |
+| `backend/requirements.txt` | `backend/requirements-dev.txt` | test and tooling dependencies |
+
+`api/` no longer exists. Updated with it: the `Dockerfile`'s `COPY`, the CI
+cache keys and install step, `vertex_explainer.py`'s path comment, `PRD.md`,
+and the deployment-contract tests.
+
+One reference did not show up in a grep for `api/requirements` because it was
+**constructed rather than written**: `test_security.py:512` built
+`self._repo_root() / "api" / "requirements.txt"` from path components. A
+textual search for the old path could not see it, and the test that reads the
+runtime requirements failed after the move. Worth recording because the same
+blind spot hides any path a test assembles instead of spelling out.
+
+### Dead code removed
+
+A sweep for unreferenced modules found none — earlier passes had taken them.
+A symbol-level sweep produced 47 candidates, of which about 20 were genuinely
+dead. Removed: `backend/core/risk/hedge_ratio.py` entirely (the
+`HedgeRatioCalculator` was constructed at `layer_03_risk_analysis.py:46` and
+never called again, and its two methods duplicated live implementations in
+`position_sizer.py`), `MCResult.prob_below`, `PriceResult.is_valid`,
+`can_price`/`can_size`/`can_compute` (registry dispatch goes through
+`REGISTRY[asset_class]` directly, so the predicates were never consulted),
+three sector-flag helpers in `company_data.py`, an 8-member diagnostic block
+and two `force_retrain_*` wrappers in `combined_detector.py`, the
+`_run_options_hedge` Phase-2 stub, and the five create-next-app SVGs in
+`frontend/public/`. 833 passed afterwards against 837 before — exactly the four
+tests that covered the removed symbols, and nothing else.
+
+Two categories were deliberately **kept**. Framework-invoked symbols (FastAPI
+handlers, Pydantic validators) show zero name references but are called by the
+framework. And about eleven symbols have tests but no product caller
+(`put_call_parity_check`, `implied_vol_76`, `compute_ols_hedge_ratio` and
+similar); deleting them would mean deleting their tests, which the spec forbids
+as a way of making a suite pass. They are listed for a decision rather than
+removed unilaterally.
+
+### The deploy surface
+
+`.gcloudignore`, new, is a **security control rather than a size
+optimisation**. `gcloud run deploy --source .` uploads the build context to a
+Cloud Storage staging bucket *before* the image is built, so the Dockerfile's
+secret-leak guard — the one added after this repository shipped five live API
+keys in a layer (§F) — runs one step too late to keep `backend/.env` out of
+that bucket. It also uses **gitignore semantics**, where a bare pattern
+matches at every directory level: the exact opposite of `.dockerignore` here,
+which is `**/`-anchored throughout precisely because bare patterns were the
+original leak. A test now fails on any `**/`-anchored pattern in
+`.gcloudignore`, because its presence is evidence the two files have been
+confused again.
+
+`scripts/deploy_backend.sh` holds the Cloud Run shape, with each value a
+contract against code elsewhere rather than a preference:
+
+- `--timeout 300` must exceed the frontend's own 240s analyze budget
+  (`TIMEOUT_MS.analyze` in `frontend/lib/api.ts`). If the platform cuts first,
+  the written timeout explanation can never be what the user sees, and the run
+  is lost after the market data was already paid for. A test parses both numbers
+  and compares them.
+- `--concurrency 8` against Cloud Run's default of **80**. Eighty concurrent
+  pipelines on two cores, each owning a `ThreadPoolExecutor`, do not run
+  slowly — they time out, while the platform reports a healthy instance.
+- `--max-instances 1` is a **correctness** setting. Fitted regime models live
+  in the container's writable layer and the response cache is per-instance, so
+  two instances can answer the same portfolio with different volatility
+  regimes. The pin makes that impossible rather than unlikely; the test
+  asserting it exists so the value is not raised as a throughput tweak.
+
+The script refuses, before calling `gcloud`, when `PROJECT_ID` or
+`FRONTEND_URL` is unset, when the origin is localhost, or when it is not
+HTTPS — the three conditions under which the service would deploy and then
+fail its own startup guard. All four refusal paths were exercised.
+
+Also fixed: `vercel.json` installed with `npm install`, which resolves afresh
+and can deploy dependency versions no CI build ever exercised — structurally
+the same defect as the container running a different numerical stack from the
+test suite (§F). Now `npm ci`. And the two `/admin/cron/retrain-*` docstrings
+still described themselves as "Vercel Cron endpoint", naming a platform that
+had been deleted from the repository; they now name Cloud Scheduler and state
+that a retrain writes to the container's writable layer and does not outlive
+the instance.
+
+### Verification
+
+| | |
+|---|---|
+| Full suite | **856 passed, 31 skipped** (833 + 19 deploy-shape + 4 runbook) |
+| New tests | **24** (20 functions, some parametrized); **16 revert-verified** — each perturbation caught, every touched file restored byte-identically (`diff -q`). The other 8 assert a file or pattern is present, where the perturbation and the assertion are the same act |
+| Frontend build after asset removal | green, 4 static pages, TypeScript clean |
+| Deploy script refusals | all four exercised live |
+| Container build after the requirements move | **not verified locally** — no container engine on this machine. CI's `image` job builds it on push; that is the only honest check |
+| README's documented backend command | was **broken** (`cd backend && uvicorn main:app` → `No module named 'backend'`); tested, fixed |
+
+**Nothing was deployed.** `scripts/deploy_backend.sh` prints its plan and exits
+unless given `--execute`, which was never passed. The three deferred
+problems — ephemeral fitted models, per-instance cache, and yfinance's
+untested behaviour from datacentre IP ranges — are unresolved by decision and
+written into `DEPLOYMENT.md` under "Known open problems" rather than left for
+whoever deploys to discover.

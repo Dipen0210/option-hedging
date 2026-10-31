@@ -32,6 +32,10 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...except the template, which documents NEXT_PUBLIC_API_URL and carries
+# no secret by construction. `.env*` above was swallowing it, so the file
+# existed on the machine that wrote it and in no clone.
+!.env.example
 
 # vercel
 .vercel
