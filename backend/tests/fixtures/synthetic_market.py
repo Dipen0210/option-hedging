@@ -519,8 +519,16 @@ def market_data_for(tickers) -> Dict[str, dict]:
         hist = ohlcv(t, "1y")
         log_ret = np.log(hist["Close"] / hist["Close"].shift(1)).dropna()
         out[t] = {
-            "spot": base_price(t),
-            "volatility": float(log_ret.rolling(20).std().iloc[-1] * math.sqrt(252)),
+            # The keys the product reads: `pipeline_orchestrator` and
+            # `layer_09` look up "spot_price" and "sigma", and
+            # `routes_portfolio.fetch_market_data` is what writes them. This
+            # fixture used to emit "spot" and "volatility", which no consumer
+            # reads, so every test driving the orchestrator through it was
+            # silently exercising the fallbacks — `spot = purchase_price` and
+            # `sigma = 0.20` — while the docstring above claimed the mapping
+            # mirrored the route.
+            "spot_price": base_price(t),
+            "sigma": float(log_ret.rolling(20).std().iloc[-1] * math.sqrt(252)),
             "dividend_yield": DIVIDEND_YIELD,
         }
     out["_global"] = {"risk_free_rate": RISK_FREE}

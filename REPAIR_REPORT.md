@@ -839,7 +839,7 @@ nothing is pushed and nothing is deployed. See R5 in §C.
 | ~~R7~~ | ~~Single-stock return data shows an implausibly weak correlation structure.~~ **CLOSED — and it was never a defect.** Root-caused, not explained away. Two things were conflated. **(a) The data is right.** The product's return series is **byte-identical** to an independent recompute straight from the raw Yahoo JSON — `maxdiff = 0.00e+00` for both the AAPL and the SPY leg — so no stage of the pipeline is distorting it. **(b) The window is the whole story.** `LOOKBACK_DAYS = 252` is what the product actually fits on; the same two series over 500 sessions give AAPL/SPY R²=**0.354**, ρ=**+0.595**, β=**1.03**. Single-stock/index correlation genuinely collapsed over the trailing twelve months — XOM/SPY flips **+0.115 → −0.329** between the two windows — while index-replication pairs are window-invariant by construction (VOO/SPY 0.994 → 0.996). Mega-cap dispersion, correctly measured. And correctly *gated*: SPY is **rejected** as an AAPL cross hedge at R²=0.084 < `MIN_CROSS_R2 = 0.30`, which is the system declining to sell a hedge it cannot justify. | — | The anomaly was real, the alarm was right to raise it, and the answer is that a 252-day ρ of 0.29 is what AAPL/SPY *was* over this particular year. Pinned by the live-provider suite, which asserts both legs carry identical dates and 501 observations. |
 | ~~R8~~ | ~~Zero-share and similar edits re-run against a stale result view.~~ **CLOSED**, and root-caused past the reported symptom: *any* unre-run edit left real figures beside inputs they did not describe — editing 500 shares to 5,000 left a VaR for 500 shares on screen with nothing to say which portfolio it belonged to. The page now records the exact payload each result was computed from, flags divergence with a banner and a re-run button, and clears the result outright when the form can no longer be analysed. Browser-verified, 28/0. | — | The reported case was a validation-path instance of a general staleness problem. |
 | ~~R9~~ | ~~L11 narrates with a figure the product did not compute.~~ **CLOSED 2026-10-30, and it was not an LLM hallucination.** A stub-only run put *"the $30,000 AAPL position"* against a `portfolio_notional` of **$40,000**. Root cause: L11 computed the exposure it put in the prompt as `shares x purchase_price` — **cost basis** — while L3 measures `current_price x shares` and VaR, hedge sizing and the budget are all computed on that. The narrative was wrong on **every** run, not just empty ones; on a profitable holding it understated exposure by exactly the unrealised gain. `portfolio_valuation.py` already called that expression `cost_basis`. Fixed: L11 passes the measured `notional_value`, the prompt carries `null` rather than a substitute when nothing was measured, the three system prompts forbid estimating a null field, and a run with no candidate on any holding skips the provider entirely. 13 tests, 11 revert-verified. | — | The empty-run symptom led to a defect in the hedged path. The prompt's own rule — *"every claim needs a number"* — turned a missing field into pressure to supply one, which is why the null rule had to be stated rather than implied. |
-| R10 | **A holding the provider cannot price may still be sized — against the price the user typed and a 20% volatility nobody measured.** `fetch_market_data` omits an unpriced ticker from `market_data` and only logs it (*"Holdings excluded for lack of a price"*), but the holding stays in the `PortfolioInput` the pipeline runs on. Three consumers then substitute: `pipeline_orchestrator` L235 and L330 use `md.get("spot_price", holding.purchase_price)` — cost basis as spot, feeding `notional` straight into the sizer — and L236, L269 and `layer_09` L158 use `md.get("sigma", 0.20)`. The sigma default directly contradicts the data layer, which omits the field deliberately and says so: *"downstream layers that need vol will see it missing rather than receiving an invented number."* They do not. `layer_03` L497 has the same shape: `except Exception: return match.shares * match.purchase_price` as a portfolio-VaR weight, swallowing the exception. | **P1** | Found 2026-10-30 by inspection while tracing R9, which was the same substitution one layer up in the narrative. **Reachable on the code path; not yet reproduced end to end**, because L3's degraded-profile guard (`data_available=False` → L4 declines) may already catch the partially-priced case before sizing — L3 fetches its own price rather than reading `market_data`, so whether the two can disagree is the open question. That has to be answered with a test, not by reading, and it decides whether this is a live defect or a latent one. Not fixed; no claim either way is in the product yet. |
+| R10 | **A holding the provider cannot price is still hedged — sized against the price the user typed.** `fetch_market_data` omits an unpriced ticker from `market_data` and only logs it, but the holding stays in the `PortfolioInput` the pipeline runs on. `pipeline_orchestrator._build_sizing_contexts` then does `md.get("spot_price", holding.purchase_price)` and sizes on `shares x` that. **Measured, not inferred:** with MSFT's true spot at **$400** and its entry absent, the sizer received `holding_notional = $10,000` (100 x the $100 purchase price) instead of **$40,000** — a 4x understatement of the exposure being hedged — and still returned a sized hedge (1 contract), with **no warning naming MSFT**. The user is under-hedged by the factor of their own unrealised gain and is not told. The same function substitutes `md.get("sigma", 0.20)`, a fabricated 20% vol, which directly contradicts the data layer: `routes_portfolio` omits the field deliberately and says *"downstream layers that need vol will see it missing rather than receiving an invented number."* `layer_09` L157-158 and `layer_03` L497 have the same shape. | **P1** | Found 2026-10-30 tracing R9 — the same substitution one layer up, in the narrative. **Not fixed; no change is in the product.** The fix is known and small, and the correct pattern is already in the same function: the options branch twenty lines below uses `holding_notional=rp.notional_value`, L3's market-measured value, while the stock branch recomputes it from `market_data` with a cost-basis fallback. L3 fetches its own prices, and in the reproduction it had MSFT's real $40,000 — so the right figure was already in hand and ignored. Left for review rather than changed unreviewed, because declining to size an unpriceable holding is a behavioural change and the 20% vol substitution needs a decision, not a default. |
 
 **No P0 defect remains open. R6 and R10 are open.** R1, R2, R3,
 R4, R5, R7, R8 and R9 are closed — R1, R3 and R7 by investigation, R2 by a decision
@@ -1780,3 +1780,42 @@ disclosure removed entirely. They now carry a candidate. Full suite: **796
 passed, 31 skipped**. Confirmed over HTTP: the options narrative states
 *"40000 USD in total notional"*, matching `portfolio_notional`, and the
 stub endpoints produce no dollar figure at all.
+
+## Appendix — the fixture that tested the fallbacks, found 2026-10-30
+
+A ④ asserted-label defect in the test harness itself, found while measuring
+R10. It is recorded because it changes what the suite's green means.
+
+`backend/tests/fixtures/synthetic_market.py::market_data_for` is documented as
+
+> Mirrors what `routes_portfolio.fetch_market_data` assembles, so a test can
+> drive the orchestrator directly without going through the route.
+
+It did not. The route writes `{"spot_price": ..., "sigma": ...}`. The fixture
+wrote `{"spot": ..., "volatility": ...}`. **No consumer in the product reads
+either of those two keys** — every one of them looks up `spot_price` and
+`sigma`:
+
+| Consumer | Reads |
+|---|---|
+| `pipeline_orchestrator._build_pricing_ctx` | `md["spot_price"]`, `md["sigma"]`, both behind an `in` guard |
+| `pipeline_orchestrator._build_sizing_contexts` | `md.get("spot_price", holding.purchase_price)`, `md.get("sigma", 0.20)` |
+| `pipeline_orchestrator._holding_notionals` | `md.get("spot_price", h.purchase_price)` |
+| `pipeline_orchestrator._reconcile_notional` | `md["spot_price"]`, behind an `in` guard |
+| `layer_09_simulation_engine` | `md.get("spot_price", 100.0)`, `md.get("sigma", 0.20)` |
+
+So every test driving the orchestrator through this fixture was exercising the
+**fallback** paths — `spot = purchase_price`, `sigma = 0.20` — and the guarded
+dict comprehensions were building an **empty** spot-price map. Tests that
+asserted on hedge sizing were asserting on hedges sized from cost basis and a
+fabricated volatility, which is the opposite of what the fixture's name and
+docstring promise. This is the failure mode the spec's *"never make tests pass
+by mocking the entire product pipeline"* warns about, arrived at by accident
+rather than by design.
+
+**Fixed:** the fixture emits `spot_price` and `sigma`. The suite still passes
+— **796 passed, 31 skipped** — which is the second finding: nothing in it
+discriminated between a market spot and the purchase price, so no test failed
+when the real keys started arriving. That gap is what let R10 sit unnoticed,
+and R10's regression test has to assert on the figure the sizer receives
+rather than on the presence of a recommendation.
