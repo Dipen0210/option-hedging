@@ -78,9 +78,19 @@ _CREDENTIAL_PHRASES = (
 # `gemini-2.5-flash` answers a new project with "404 — This model
 # models/gemini-2.5-flash is no longer available to new users", and a retired
 # model will keep being retired on every retry.
+# "publisher model" is Vertex AI's wording and is the discriminator on purpose,
+# not a convenience. Vertex answers an unavailable model with
+#   404: Publisher model `projects/<p>/locations/<l>/publishers/google/
+#        models/<m>` was not found or your project does not have access to it.
+# while a 404 caused by *our own* malformed URL is Google's generic frontend
+# page — "The requested URL ... was not found on this server" — which contains
+# none of these phrases and so stays an ordinary failure. Matching on the
+# shared words ("was not found", "does not have access") would have collapsed
+# that distinction and reported a bug of ours as a model the account may not
+# use.
 _MODEL_PHRASES = (
     "no longer available", "is not found", "not found for api version",
-    "model not found", "does not exist",
+    "model not found", "does not exist", "publisher model",
 )
 
 _PERMISSION_PHRASES = (

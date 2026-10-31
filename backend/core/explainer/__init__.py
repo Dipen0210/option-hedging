@@ -10,7 +10,10 @@ Usage:
 
 Available providers:
     "claude"        — Anthropic claude-sonnet-4-6 (settings.anthropic_api_key)
-    "gemini"        — Google Gemini over the Generative Language REST API
+    "vertex"        — Google Gemini over Vertex AI, authenticated with IAM
+                      (settings.vertex_project, _location, _model)
+    "gemini"        — the same models over the Generative Language REST API,
+                      authenticated with an API key
                       (settings.gemini_api_key, settings.gemini_model)
     "huggingface"   — meta-llama/Llama-3.3-70B-Instruct via HF Inference API
                       (settings.hf_api_token, settings.hf_model)
@@ -24,6 +27,7 @@ from backend.core.explainer.gemini_explainer import GeminiExplainer
 from backend.core.explainer.huggingface_explainer import HuggingFaceExplainer
 from backend.core.explainer.ollama_explainer import OllamaExplainer
 from backend.core.explainer.prompt_builder import PromptBuilder
+from backend.core.explainer.vertex_explainer import VertexExplainer
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +46,8 @@ def get_explainer(provider: str = None) -> BaseLLMExplainer:
     settings = get_settings()
     p = (provider or settings.llm_provider or "claude").lower()
 
+    if p == "vertex":
+        return VertexExplainer()
     if p == "gemini":
         return GeminiExplainer()
     if p == "huggingface":
@@ -67,6 +73,7 @@ __all__ = [
     "PortfolioExplanation",
     "ClaudeExplainer",
     "GeminiExplainer",
+    "VertexExplainer",
     "HuggingFaceExplainer",
     "OllamaExplainer",
     "PromptBuilder",

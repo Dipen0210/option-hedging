@@ -375,10 +375,10 @@ revert-verified.
 **And then the product was given a model (2026-10-30).** Defects 38 and 39
 fixed the *reporting* and left the product with nothing to report: HuggingFace
 had no credits and the Anthropic key was a placeholder, so every run shipped
-the deterministic narrative. The user chose Gemini from a new GCP project, and
-the full decision — the restricted key, why the REST API instead of the SDK,
-and the model chosen by replaying a captured live prompt against each stable
-candidate — is in `PRD.md` §7.3. What belongs *here* is that a second provider
+the deterministic narrative. The user chose Gemini from a new GCP project — first over the API
+key, then, on the same day, **over Vertex AI with IAM authentication** and
+with billing linked to the same account as their two other projects. The full
+decision is in `PRD.md` §7.3. What belongs *here* is that a second provider
 is where this defect class gets a second chance, and it took it three times:
 
 - **An invalid Gemini key is a `400`, not a `401`.** A classifier keyed on
@@ -427,6 +427,43 @@ The prose cites the computed figures rather than inventing any — *"-36.383
 delta_per_contract"*, *"basis_risk_r2 1.0"*, *"$1140 total_cost_usd"*. 39
 tests; every fix fails when reverted, in both directions.
 
+**Then the credential was replaced, and the lesson repeated once more.**
+Moving to Vertex AI removes the long-lived secret entirely: IAM locally via
+ADC, an attached service account in Cloud Run, no key to store or leak.
+Vertex is a *subclass* of the API-key provider precisely because of the
+paragraphs above — the retry, the thinking budget and the refusal
+classification are the parts already got wrong once, so they are inherited
+rather than copied, and tests assert the inherited defences actually run on
+the new path. Two Vertex-specific traps were found the same way as the rest,
+by making real calls:
+
+- **The location is not free.** `gemini-3.5-flash` is served from `global`
+  only; every regional endpoint answers the 3.x models `404 NOT_FOUND`. And
+  `global` is not spelled like a region — its host is the unprefixed
+  `aiplatform.googleapis.com`.
+- **Vertex has its own two 404s.** An unavailable model says *"Publisher
+  model ... was not found or your project does not have access to it"*; a URL
+  we malformed gets Google's generic HTML page. `"publisher model"` is the
+  discriminator, and the revert check proves it is the right one: matching the
+  words the two messages *share* ("was not found") makes the "our own bug"
+  test fail.
+
+One thing that would have gone unnoticed without looking: Application Default
+Credentials carry a `quota_project_id`, and on this machine it names a
+different project of the user's. `AuthorizedSession` sends it as
+`x-goog-user-project`, so the first working Vertex calls would have billed an
+unrelated project. The quota project is now set from `VERTEX_PROJECT`, and the
+outgoing header on a live call was inspected to confirm it. The user's shared
+ADC file was left untouched.
+
+**Verified live on the Vertex path:** 200 in **21.9s**, `llm_provider:
+"vertex"`, empty `llm_notice`, prose on all 14 candidates, all four portfolio
+fields, all 9 warnings intact, and no bearer token, key, project id or
+internal path in the body. The cost constraint was re-checked on that
+response: $8,721.04 against a $10,011.81 budget = **2.613% of $333,727
+notional**, under the user's 3% cap, with TLT left unhedged and a stated
+reason. 24 further tests, each revert-verified; 769 in the suite, 0 failing.
+
 **One honest gap:** `when_works_best` and `when_fails` were absent on 4 of the
 14 candidates. Those two fields have no deterministic source anywhere in the
 product — `layer_05_llm_explainer.py` is their only writer and the frontend
@@ -434,11 +471,14 @@ hides the section when they are empty — so an omission costs a section, not
 correctness, and nothing is substituted for them. It is prompt adherence, not
 a correctness or disclosure defect.
 
-**Files:** `backend/core/explainer/gemini_explainer.py` (new),
+**Files:** `backend/core/explainer/vertex_explainer.py` (new),
+`backend/core/explainer/gemini_explainer.py` (new),
 `backend/core/explainer/response_parsers.py` (new),
 `backend/core/explainer/base_explainer.py`,
 `backend/core/explainer/__init__.py`, `backend/config/settings.py`,
-`backend/.env.example`, `backend/tests/test_gemini_explainer.py` (new)
+`backend/.env.example`, `api/requirements.txt`,
+`backend/tests/test_gemini_explainer.py` (new),
+`backend/tests/test_vertex_explainer.py` (new)
 
 ### ⑤ Silent substitution — 6 defects
 
@@ -1032,7 +1072,7 @@ now tested at the unit, pipeline and live-HTTP levels.
 | 5. Per-holding recommendations | **Verified** | One entry per holding; TLT returned unhedged **with a stated reason** **[verified]** |
 | 6. Candidate detail (contract, strike, expiry, premium, Greeks, provenance) | **Verified** | 14 candidates, all OCC-verified; `premium_source` and `iv_source` on every one **[verified]** |
 | 7. Budget bar / cost comparison | **Verified** | 7,328 / 10,113 = 72.5% **[verified]** |
-| 8. Narrative explanation | **Verified** | Produced with no model available, and `llm_notice` **says so** **[verified]**. It also distinguishes *why*: a provider that refuses permanently (no credits, refused key, retired model) is reported as permanent and operator-actionable rather than as "no analysis for this run" — see defect 38 **[verified live] [tested]**. As of 2026-10-30 it is also verified *with* a model: a live run over real market data produced Gemini prose on all 14 candidates with an **empty** `llm_notice`, the deterministic backstop standing aside, and all 12 degradation warnings intact afterwards **[verified live] [tested]** |
+| 8. Narrative explanation | **Verified** | Produced with no model available, and `llm_notice` **says so** **[verified]**. It also distinguishes *why*: a provider that refuses permanently (no credits, refused key, retired model) is reported as permanent and operator-actionable rather than as "no analysis for this run" — see defect 38 **[verified live] [tested]**. As of 2026-10-30 it is also verified *with* a model, on both Google surfaces: a live run over real market data produced Gemini prose on all 14 candidates with an **empty** `llm_notice`, the deterministic backstop standing aside, and every degradation warning intact afterwards — first over the API key, then over Vertex AI with IAM authentication, which is the configured provider **[verified live] [tested]** |
 | 9. Disclosures and data quality | **Verified** | Ledger + grouped warnings (8 on the market-open run, 37 pre-market); every degraded field named **[verified]** |
 | **9b. Disclosures survive an LLM rewrite** | **Verified** | Live `POST /portfolio/analyze` with a provider wired in: all 6 candidates rewritten by the model, all 5 disclosures still present and leading the `cons` list. Same request with the fix reverted: **5 deleted** **[verified] [tested]** |
 | **Failure scenarios** | **Verified** | 5/5 malformed inputs → 422 sanitised; malformed JSON → 422; unknown route → 404; 4/4 privileged endpoints → 503 fail-closed; **no internals leaked anywhere** **[verified]** |

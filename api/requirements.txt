@@ -46,6 +46,23 @@ arch==8.0.0
 anthropic==0.95.0
 huggingface_hub==1.17.0
 
+# Vertex AI authentication for the Gemini provider.
+#
+# Vertex has no API key: every call carries an OAuth bearer token, so the one
+# thing we cannot do without a library is mint one. google-auth is that
+# library and nothing more — it resolves Application Default Credentials (a
+# developer's gcloud login locally, the attached service account in Cloud Run)
+# and signs the token. The REST call itself stays on `requests`.
+#
+# The heavier google-genai / google-cloud-aiplatform SDKs were rejected: both
+# pull grpcio and protobuf, which have no cp313 wheels for every platform we
+# build and would have broken the property that the whole closure installs
+# from wheels with zero source builds. google-auth's own closure (pyasn1,
+# pyasn1-modules, cryptography) is wheel-only and ~5MB; grpcio and protobuf
+# appear only under its `grpc`/`testing`/`aiohttp` extras, which we do not
+# install.
+google-auth==2.62.0
+
 # Scheduler — fast(24h) + main(monthly) model retrains
 apscheduler==3.11.2
 

@@ -662,25 +662,59 @@ every entry has at least one regression test. Grouped by the defect class from
 ### 7.3 The language model provider
 
 Decided by the user on 2026-10-30, after defects 38 and 39 established that
-the product had no reachable model: **Gemini, from a dedicated GCP project.**
+the product had no reachable model: **Gemini, from a dedicated GCP project** —
+and, on the same day, **reached through Vertex AI rather than an API key.**
+The second decision changes the credential, not the model, so everything
+measured below carries over.
 
-**The project and the key.** Project `optionq-20261030-d85397` (display name
-`optionQ`), with `generativelanguage.googleapis.com` and
-`apikeys.googleapis.com` enabled; no billing link is required for the free
-tier. The API key is restricted to `generativelanguage.googleapis.com` alone,
-so a leak cannot reach the other APIs in the project or the two unrelated
-projects in the same account. It lives in `backend/.env`, which is gitignored
-and excluded from the image by a build-time guard that fails the build on a
-leak (defect 37). Its value has never been printed, logged or committed.
+`LLM_PROVIDER=vertex` is the configured provider. The API-key provider
+(`gemini`) remains in the tree, tested and working, as the fallback for an
+environment with no Google Cloud identity.
 
-**No SDK, and no new dependency.** The provider calls
-`POST .../v1beta/models/{model}:generateContent` with `requests==2.33.1`,
-which is already in the runtime closure. `google-genai` would have pulled
-google-auth, protobuf and grpcio into an image whose deployment contract
-asserts that all 73 distributions resolve to `cp313` linux x86-64 wheels with
-**zero source builds** — and grpcio is a common exception to that. The key
-travels in the `x-goog-api-key` header rather than a `?key=` query parameter,
-because `requests` copies the full URL into the text of every error it raises.
+**The project and its billing.** Project `optionq-20261030-d85397` (display
+name `optionQ`), with `aiplatform.googleapis.com` enabled and billing linked
+to `billingAccounts/01E3F1-8C5C55-26A845` — the same account as the two
+pre-existing projects, `travelo-499805` and `consultai-20261029-580f3b`, as
+the user asked. Verified `billingEnabled: true` on all three. Vertex has no
+free tier, so the billing link is a prerequisite here rather than a
+convenience.
+
+**Why Vertex, and not the key.** Vertex authenticates with IAM, so there is
+**no long-lived secret**: nothing to put in an environment variable, bake into
+an image, or leak through a log — two of the three failure modes an API key
+has, removed rather than defended against. Access is revoked in IAM instead of
+by rotating a string. The same code path works unchanged in both places it has
+to run: `gcloud auth application-default login` locally, and the attached
+service account in Cloud Run.
+
+**One new dependency, and why it is this one.** Vertex has no API key, so the
+one thing that cannot be done without a library is minting an OAuth token.
+`google-auth==2.62.0` does exactly that and nothing else; the REST call itself
+stays on `requests==2.33.1`. The heavier `google-genai` and
+`google-cloud-aiplatform` SDKs were rejected because both pull **grpcio and
+protobuf** into an image whose deployment contract asserts that every
+distribution resolves to a `cp313` linux x86-64 wheel with **zero source
+builds**, and grpcio is a common exception to that. google-auth's own closure
+(`pyasn1`, `pyasn1-modules`, `cryptography`) is wheel-only and ~5MB; grpcio
+and protobuf appear only under its `grpc`/`testing`/`aiohttp` extras, which
+are not installed. The property the contract asserts is preserved.
+
+**Quota is attributed to this project explicitly.** Application Default
+Credentials carry a `quota_project_id` from whichever project the developer
+last configured — on the machine this was built on, `travelo-499805`.
+`AuthorizedSession` turns that into an `x-goog-user-project` header, so without
+an override the calls would have billed and counted against an unrelated
+project. The quota project is set from `VERTEX_PROJECT`, and the live call was
+inspected to confirm the outgoing header reads `optionq-20261030-d85397`. The
+developer's shared ADC file was deliberately **not** modified.
+
+**The location was measured, not chosen.** `gemini-3.5-flash` is served from
+`global` only. Every regional endpoint tried — `us-central1` included —
+answers the 3.x models with `404 NOT_FOUND`, and `gemini-2.5-*` is retired for
+new projects on Vertex exactly as on the Generative Language API. `global` is
+also spelled differently from a region: its host is the unprefixed
+`aiplatform.googleapis.com`, so the obvious `f"{location}-aiplatform..."`
+produces a URL that resolves to nothing. Both facts are pinned by tests.
 
 **The model was chosen by measurement, not reputation.** The real combined
 prompt was captured from a live hedge run (3,954 characters of system
@@ -699,6 +733,16 @@ Pinned to an exact version. The API also serves `-preview` builds and shifting
 `-latest` aliases, and this repo already has a defect (36) about a dev
 prerelease reaching the dependency graph of a system that prices hedges; the
 thing writing the narratives should not change underneath a run either.
+
+**Vertex is a subclass, not a second copy.** Both Google surfaces speak the
+same `generateContent` protocol: identical request body, response shape and
+error envelope. Only the URL and the credential differ, and those are two
+overridable hooks. The retry policy, the `thinkingBudget` defence, the
+empty-response reporting and the refusal classification are **inherited**,
+because those are the parts that were got wrong once already — a copied class
+would let the next fix land on one surface and silently miss the other. Tests
+assert the inherited defences still run on the Vertex path rather than
+assuming they do.
 
 **Three ways this provider could have repeated defect 38, all closed.**
 
@@ -720,7 +764,14 @@ thing writing the narratives should not change underneath a run either.
 equally the shape of a malformed request of our own — and reporting our own
 bug as "your credentials were refused" is simply a different false statement.
 Both directions are pinned: a 404 naming a retired model is a refusal, a 404
-from a wrong URL of ours is not. 401/402/403 remain unconditional, since no
+from a wrong URL of ours is not. Vertex has its own pair of 404s and they are
+pinned the same way. An unavailable model reads *"**Publisher model** `...`
+was not found or your project does not have access to it"*; a URL we malformed
+gets Google's generic HTML frontend page instead, with no JSON body at all.
+`"publisher model"` is the discriminator on purpose — matching the words the
+two share (*"was not found"*) would have collapsed the distinction, and a
+revert check confirms it: substituting the shared wording makes the
+"our own bug" test fail. 401/402/403 remain unconditional, since no
 provider answers those to a request we malformed.
 
 **Capacity, and why there is a retry.** The free tier sheds load with
@@ -731,8 +782,13 @@ narrative to a condition that clears in a second. Three attempts with 1s then
 and the refusals give the same answer every time. A run that cannot get
 through in three attempts degrades to the deterministic narrative and says so.
 The free tier also enforces a per-minute request quota — reached during model
-selection, correctly classified as transient — so on this tier the narrative
-is best-effort by design, and the hedge analysis never depends on it.
+selection, correctly classified as transient — so on that tier the narrative
+is best-effort by design, and the hedge analysis never depends on it. On
+Vertex the capacity picture is better, because the quota is the paid project's
+rather than a shared free pool: no 503 was observed in live verification. The
+retry is kept regardless — it costs nothing when nothing fails, and a
+capacity failure must never be the thing that turns a correct hedge analysis
+into a missing narrative.
 
 **Found while building it, and fixed before it shipped** (so neither is in the
 defect register — neither ever reached the product): 404 was briefly
@@ -743,12 +799,25 @@ configured key through a falsiness test, substituting a live credential for an
 explicitly absent one — `None` now means "read the configuration" and `""`
 means "none".
 
-**What is verified.** 39 unit tests, each fix revert-verified in both
-directions, plus a live end-to-end `POST /portfolio/analyze` over real market
-data: HTTP 200 in 42.1s (including two 503 retries), `llm_provider: "gemini"`,
-an **empty** `llm_notice`, model prose on all 14 candidates, all 4
-portfolio-level fields, all 12 degradation warnings still present after the
-LLM rewrite, and no key, URL or internal path anywhere in the response body.
+**What is verified.** 63 unit tests across the two providers (39 + 24), each
+fix revert-verified in both directions — the Vertex set covering the endpoint
+for both `global` and a region, the absence of any API-key header, the
+quota-project override, an unresolvable credential reported as a refusal
+rather than an empty run, both 404s, and the inherited defences still running
+on this path.
+
+Plus a live end-to-end `POST /portfolio/analyze` over real market data,
+through Vertex: **HTTP 200 in 21.9s**, `llm_provider: "vertex"`, an **empty**
+`llm_notice`, model prose on all 14 candidates citing the computed figures
+(deltas, theta, strikes, R²), all 4 portfolio-level fields, all 9 degradation
+warnings still present after the LLM rewrite, and no bearer token, API key,
+project id, URL or internal path anywhere in the response body.
+
+The user's cost constraint was re-verified on that same live response, not
+assumed: notional $333,727.00, 3% budget $10,011.81, actual spend $8,721.04 =
+**2.613% of notional**, with `hedge_budget_utilization` consistent with the
+computed ratio to the 4 decimal places it is rounded to. TLT was returned
+**unhedged with a stated reason** rather than forced into a recommendation.
 `when_works_best`/`when_fails` were absent on 4 of 14 candidates: those two
 fields have no deterministic source anywhere in the product — the model is
 their only writer, and the frontend hides the section when they are empty — so
@@ -919,8 +988,8 @@ consequences for anyone working on this codebase:
 | ~~P1~~ | ~~Build and run the container image once~~ | **Done 2026-10-29.** Podman installed, image built `--platform linux/amd64` and run: 11/11 checks after the fix. It found defect 37 — five live API keys in the image, because every `.dockerignore` rule aimed inside `backend/` matched nothing and five test assertions checked the rules' text rather than their effect. Now 668MB, with a build-time guard that fails the build on any future leak |
 | **Held** | Deploy to Cloud Run once, behind approval | **Deferred at the user's instruction (2026-10-30): the Google Cloud and Vercel accounts are being changed, so any platform work now would be verified against credentials that are about to be replaced.** The serverless backend half was deleted in `17258a4` — its runtime closure is 370MB against Vercel's 250MB function limit, it cannot host APScheduler, and the four `os.environ.get("VERCEL")` branches that papered over this made that deployment behave differently from everything the suite exercises. The image is verified; the platform is not. Networking, memory limits, cold start and the real service account are untested, and `OPTIONQ_CACHE_DB` must point at a writable volume there |
 | ~~P1~~ | ~~Move the container build into CI or Cloud Build~~ | **Done 2026-10-30.** `.github/workflows/ci.yml` builds `--platform linux/amd64` and runs `scripts/verify_image.sh` on every push; GitHub's runners are x86-64, so no emulation. **It failed on its first run and found a P0-class defect:** everything in `backend/ml_models/` is gitignored, so the directory is absent from a clean clone and `chown` could not find it — the 2026-10-29 build had only succeeded because that machine had untracked locally-trained models sitting there. **The image was never buildable from the repository.** Fixed three ways (Dockerfile `mkdir -p`, a tracked README so the directory survives a clean clone, three regression tests), each revert-verified. A second failure followed: `verify_image.sh` asserted `POST` on `/admin/cron/retrain-*`, which the app serves as `GET`, so all four authorization cells had been returning 405 without ever reaching the dependency they claimed to test — `expect` now treats a 405 as a defect in the check. All three jobs green as of `58ebb99`. The original rationale stands: *the 2026-10-29 verification was real but no longer reproducible here*: podman was removed from the machine on 2026-10-30. A verification that depends on a tool somebody has to remember to install, on a laptop, is a verification that will quietly stop happening — and the one time it ran it found a P0. It belongs in a pipeline that builds `--platform linux/amd64` on every change and runs the Dockerfile's leak guard, so neither the build nor the guard depends on anyone's local setup |
-| **P2** | Exercise the LLM explainer inside the container | The deterministic fallback is verified and discloses itself correctly; the LLM path in the container is not. **No longer blocked** — the Gemini provider works against a live key (§7.3) and needs no new dependency, since it calls the REST API with the already-pinned `requests`. What is untested is that path *inside the image*: the container would need `GEMINI_API_KEY` and `LLM_PROVIDER=gemini` passed in at run time, which is deployment-shaped work and so sits behind the Held row |
-| ~~P1 — needed a decision~~ | ~~Give the product a working language model, or decide it ships without one~~ | **Answered 2026-10-30 by the user: Gemini, from a new GCP project.** Defects 38 and 39 had fixed only the *reporting* — a refusal was reported as permanent and operator-actionable instead of "no analysis for this run" — and left the product with no model: HuggingFace returned HTTP 402 (no credits) and `ANTHROPIC_API_KEY` was a 13-character placeholder, so every run shipped the deterministic narrative. A `gemini` provider now exists (§7.3), the key comes from a dedicated project restricted to one API, and a live run over real market data produces model prose with an empty `llm_notice`. The deterministic narrative stays as the backstop and still discloses itself when it is used. `llm_model` still defaults to `claude-sonnet-4-6`, which only matters if the Claude path is ever chosen again |
+| **P2** | Exercise the LLM explainer inside the container | The deterministic fallback is verified and discloses itself correctly; the LLM path in the container is not. **No longer blocked** — the Vertex provider works against the live API (§7.3). What is untested is that path *inside the image*. Vertex improves the shape of that remaining work rather than only deferring it: there is no secret to inject, so the container needs `LLM_PROVIDER=vertex` and `VERTEX_PROJECT` — two non-secret environment variables — plus a service account with `roles/aiplatform.user`, which is how Cloud Run supplies identity anyway. `google-auth` resolves the attached account with no code difference from the local ADC path. Still deployment-shaped work, so it sits behind the Held row |
+| ~~P1 — needed a decision~~ | ~~Give the product a working language model, or decide it ships without one~~ | **Answered 2026-10-30 by the user: Gemini, from a new GCP project, over Vertex AI.** Defects 38 and 39 had fixed only the *reporting* — a refusal was reported as permanent and operator-actionable instead of "no analysis for this run" — and left the product with no model: HuggingFace returned HTTP 402 (no credits) and `ANTHROPIC_API_KEY` was a 13-character placeholder, so every run shipped the deterministic narrative. A `vertex` provider now exists (§7.3), authenticated with IAM so there is no API key to store, in a dedicated project whose billing is linked to the same account as the user's two other projects; a live run over real market data produces model prose with an empty `llm_notice`. An API-key `gemini` provider was built first and is kept, tested, as the fallback for an environment with no Google Cloud identity. The deterministic narrative stays as the backstop and still discloses itself when it is used. `llm_model` still defaults to `claude-sonnet-4-6`, which only matters if the Claude path is ever chosen again |
 | ~~P0~~ | ~~Resolve the no-valid-quote question~~ | **Done 2026-10-29** — a conditional, self-calibrating refusal that distinguishes an absent market from a closed one. §7.2 |
 | ~~P0~~ | ~~Re-run the full end-to-end verification during US market hours~~ | **Done 2026-10-29** — `market_mid` + `contract_iv` observed on live two-sided quotes |
 | ~~P0~~ | ~~Stop the explanation layer from deleting the product's disclosures~~ | **Done 2026-10-29** — found while closing the Layer 5 item; proven both ways over the live HTTP route. Defect 31 |

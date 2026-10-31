@@ -9,7 +9,7 @@ _ENV_FILE = os.path.join(os.path.dirname(__file__), "..", ".env")
 class Settings(BaseSettings):
     # Anthropic / LLM
     anthropic_api_key: str = ""
-    llm_provider: str = "claude"       # "claude" | "gemini" | "huggingface" | "ollama"
+    llm_provider: str = "claude"       # "claude" | "vertex" | "gemini" | "huggingface" | "ollama"
     llm_model: str = "claude-sonnet-4-6"
 
     # Google Gemini, via the Generative Language REST API.
@@ -29,6 +29,25 @@ class Settings(BaseSettings):
     # and -pro all answer a new project with 404: retired for new users.
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.5-flash"
+
+    # Google Gemini, via Vertex AI. The configured provider.
+    #
+    # Same model as above, reached through Vertex instead of an API key, so the
+    # bake-off that chose gemini-3.5-flash carries over unchanged. What changes
+    # is the credential: Vertex authenticates with IAM, so there is no
+    # long-lived secret to store in an environment variable, bake into an image
+    # or leak through a log, and access is revoked in IAM rather than by
+    # rotating a string. Locally that is `gcloud auth application-default
+    # login`; in Cloud Run it is the attached service account, with no
+    # configuration difference between the two.
+    #
+    # The location is `global`, measured rather than chosen: the 3.x Gemini
+    # publisher models are served only from `global`, and every regional
+    # endpoint tried (us-central1 among them) answers them with 404 NOT_FOUND.
+    # An empty vertex_project disables the provider rather than guessing one.
+    vertex_project: str = ""
+    vertex_location: str = "global"
+    vertex_model: str = "gemini-3.5-flash"
 
     # HuggingFace Inference API
     hf_api_token: str = ""

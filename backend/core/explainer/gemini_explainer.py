@@ -103,13 +103,18 @@ class GeminiHTTPError(Exception):
     key from a malformed request of our own. This carries both.
     """
 
-    def __init__(self, status_code: int, api_message: str):
-        super().__init__(f"Gemini API returned {status_code}: {api_message}")
+    def __init__(self, status_code: int, api_message: str, provider: str = "Gemini"):
+        super().__init__(f"{provider} API returned {status_code}: {api_message}")
         self.status_code = status_code
         self.api_message = api_message
 
 
 class GeminiExplainer(BaseLLMExplainer):
+
+    # Name used in log lines and in parse-failure messages. Not the same thing
+    # as `provider_name`, which is the configuration value the factory matches
+    # and which also reaches the API response.
+    display_name = "Gemini"
 
     @property
     def provider_name(self) -> str:
@@ -141,6 +146,26 @@ class GeminiExplainer(BaseLLMExplainer):
     def supports_combined_call(self) -> bool:
         return True
 
+    # ── What a sibling Google surface overrides, and all it overrides ────────
+    #
+    # Vertex AI speaks the same `generateContent` protocol as the Generative
+    # Language API: identical request body, identical response shape, identical
+    # error envelope. Only the URL and the credential differ — Vertex puts the
+    # project and region in the path and authenticates with an OAuth bearer
+    # token instead of an API key.
+    #
+    # They are hooks rather than a second copy of this class on purpose. The
+    # retry policy, the `thinkingBudget` defence, the empty-response reporting
+    # and the refusal classification are the parts that were got wrong once
+    # already; a fix to any of them must not be able to land on one surface and
+    # silently miss the other.
+
+    def _endpoint(self) -> str:
+        return f"{API_ROOT}/{self._model}:generateContent"
+
+    def _auth_headers(self) -> Dict[str, str]:
+        return {"x-goog-api-key": self._api_key}
+
     # ── The one network call ──────────────────────────────────────────────────
 
     def _generate(self, system: str, user_payload: Dict[str, Any], max_tokens: int) -> str:
@@ -170,26 +195,25 @@ class GeminiExplainer(BaseLLMExplainer):
 
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             resp = self._get_session().post(
-                f"{API_ROOT}/{self._model}:generateContent",
-                headers={
-                    "x-goog-api-key": self._api_key,
-                    "Content-Type": "application/json",
-                },
+                self._endpoint(),
+                headers={**self._auth_headers(), "Content-Type": "application/json"},
                 json=body,
                 timeout=REQUEST_TIMEOUT_SECONDS,
             )
 
             if resp.status_code < 400:
-                return _first_text(resp.json(), self._model)
+                return _first_text(resp.json(), self._model, self.display_name)
 
-            err = GeminiHTTPError(resp.status_code, _api_error_message(resp))
+            err = GeminiHTTPError(
+                resp.status_code, _api_error_message(resp), self.display_name)
             if resp.status_code not in _RETRY_STATUSES or attempt == _MAX_ATTEMPTS:
                 raise err
 
             delay = _BACKOFF_SECONDS[attempt - 1]
             logger.warning(
-                "Gemini (%s) returned %d on attempt %d/%d — retrying in %.0fs",
-                self._model, resp.status_code, attempt, _MAX_ATTEMPTS, delay,
+                "%s (%s) returned %d on attempt %d/%d — retrying in %.0fs",
+                self.display_name, self._model, resp.status_code,
+                attempt, _MAX_ATTEMPTS, delay,
             )
             time.sleep(delay)
 
@@ -199,16 +223,18 @@ class GeminiExplainer(BaseLLMExplainer):
 
     def explain_candidates(self, context: Dict[str, Any]) -> List[CandidateExplanation]:
         if not self.is_available():
-            logger.warning("Gemini API key not configured — skipping explanation")
+            logger.warning(
+                "%s is not configured — skipping explanation", self.display_name)
             return []
         try:
             raw = self._generate(CANDIDATES_SYSTEM, context, CANDIDATE_MAX_TOKENS)
-            return parse_candidates(raw, context, "Gemini")
+            return parse_candidates(raw, context, self.display_name)
         except (LLMProviderRejectedError, LLMRateLimitError):
             raise
         except Exception as e:
             raise_if_provider_refused(e, self.provider_name)
-            logger.error("Gemini explain_candidates failed: %s", e)
+            logger.error(
+                "%s explain_candidates failed: %s", self.display_name, e)
             return []
 
     def explain_portfolio(self, context: Dict[str, Any]) -> PortfolioExplanation:
@@ -216,12 +242,13 @@ class GeminiExplainer(BaseLLMExplainer):
             return PortfolioExplanation()
         try:
             raw = self._generate(PORTFOLIO_SYSTEM, context, PORTFOLIO_MAX_TOKENS)
-            return parse_portfolio(raw, "Gemini")
+            return parse_portfolio(raw, self.display_name)
         except (LLMProviderRejectedError, LLMRateLimitError):
             raise
         except Exception as e:
             raise_if_provider_refused(e, self.provider_name)
-            logger.error("Gemini explain_portfolio failed: %s", e)
+            logger.error(
+                "%s explain_portfolio failed: %s", self.display_name, e)
             return PortfolioExplanation()
 
     def explain_all(self, combined_context: Dict[str, Any]) -> CombinedExplanation:
@@ -230,12 +257,13 @@ class GeminiExplainer(BaseLLMExplainer):
             return CombinedExplanation()
         try:
             raw = self._generate(COMBINED_SYSTEM, combined_context, COMBINED_MAX_TOKENS)
-            return parse_combined(raw, combined_context, "Gemini")
+            return parse_combined(raw, combined_context, self.display_name)
         except (LLMProviderRejectedError, LLMRateLimitError):
             raise
         except Exception as e:
             raise_if_provider_refused(e, self.provider_name)
-            logger.error("Gemini explain_all failed: %s", e)
+            logger.error(
+                "%s explain_all failed: %s", self.display_name, e)
             return CombinedExplanation()
 
 
@@ -255,7 +283,7 @@ def _api_error_message(resp: "requests.Response") -> str:
         return (resp.text or "")[:300]
 
 
-def _first_text(payload: Dict[str, Any], model: str) -> str:
+def _first_text(payload: Dict[str, Any], model: str, provider: str = "Gemini") -> str:
     """
     The text of the first candidate, or "" with a log line saying why not.
 
@@ -267,7 +295,7 @@ def _first_text(payload: Dict[str, Any], model: str) -> str:
     candidates = payload.get("candidates") or []
     if not candidates:
         reason = ((payload.get("promptFeedback") or {}).get("blockReason")) or "no candidates returned"
-        logger.warning("Gemini (%s) returned nothing: %s", model, reason)
+        logger.warning("%s (%s) returned nothing: %s", provider, model, reason)
         return ""
 
     first = candidates[0] or {}
@@ -277,13 +305,14 @@ def _first_text(payload: Dict[str, Any], model: str) -> str:
 
     if not text:
         logger.warning(
-            "Gemini (%s) returned an empty response (finishReason=%s). "
+            "%s (%s) returned an empty response (finishReason=%s). "
             "MAX_TOKENS here means the output budget was exhausted; SAFETY "
-            "means the prompt was refused.", model, finish or "unspecified",
+            "means the prompt was refused.",
+            provider, model, finish or "unspecified",
         )
     elif finish not in ("STOP", ""):
         logger.warning(
-            "Gemini (%s) stopped early (finishReason=%s) — the JSON may be "
-            "truncated and parse to a partial result.", model, finish,
+            "%s (%s) stopped early (finishReason=%s) — the JSON may be "
+            "truncated and parse to a partial result.", provider, model, finish,
         )
     return text
