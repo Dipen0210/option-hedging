@@ -217,14 +217,74 @@ class HedgeOrchestrator:
                     f"liquidity constraints; the position is shown unhedged."
                 )
 
+    @staticmethod
+    def _measured_notional(rp) -> Optional[float]:
+        """
+        The holding's exposure as L3 measured it, or None if it was not.
+
+        L3 computes `current_price x shares` and fetches its own prices. Five
+        call sites used to re-derive this figure instead of reading it, and
+        every one substituted when `market_data` lacked an entry: three fell
+        back to `shares x purchase_price` — cost basis, the price the user
+        typed — and two to the whole portfolio's notional. The substitutions
+        were never a last resort; a measurement was sitting beside them
+        unread.
+        """
+        if rp is None or not getattr(rp, "data_available", True):
+            return None
+        notional = getattr(rp, "notional_value", None)
+        return notional if notional else None
+
+    @staticmethod
+    def _decline_unpriced(hedge_output: HedgeOutput, declined: Dict[str, str]) -> None:
+        """
+        Withdraw candidates for a holding whose exposure could not be measured,
+        and say why.
+
+        Sizing, scoring and simulating all need the holding's market value.
+        When it is unknown, every downstream layer had its own substitute —
+        cost basis in two places, the whole portfolio's notional in three —
+        and each produced a confident recommendation from a number the product
+        had not measured. Withdrawing here is what makes those fallbacks
+        unreachable rather than merely discouraged.
+
+        A holding that already has no candidates is left alone: L4 has already
+        recorded why, and a second warning would name a reason that is not the
+        one that applied.
+        """
+        for rec in hedge_output.recommendations:
+            reason = declined.get(rec.asset_ticker)
+            if not reason or not rec.candidates:
+                continue
+            logger.info(
+                "Declining %d candidate(s) for %s: %s",
+                len(rec.candidates), rec.asset_ticker, reason,
+            )
+            rec.candidates = []
+            hedge_output.warnings.append(
+                f"{rec.asset_ticker} is shown unhedged because {reason}. "
+                f"Sizing a hedge would have required assuming a price for it."
+            )
+
     def _build_sizing_contexts(
         self,
         portfolio: PortfolioInput,
         market_data: Dict[str, Any],
         risk_summary: PortfolioRiskSummary,
-    ) -> Dict[str, SizingContext]:
+    ) -> tuple[Dict[str, SizingContext], Dict[str, str]]:
+        """
+        Build a sizing context per holding, and name the holdings denied one.
+
+        A holding with no market price is declined, not sized. It used to be
+        sized on `shares x purchase_price`: with MSFT's true spot at $400 and
+        a $100 purchase price the sizer received a $10,000 exposure instead of
+        $40,000 and still returned a confident single contract, with no
+        warning naming MSFT. The error equals the unrealised gain, so it was
+        worst on the holdings the user had done best on.
+        """
         g = market_data.get("_global", {})
-        contexts = {}
+        contexts: Dict[str, SizingContext] = {}
+        declined: Dict[str, str] = {}
         risk_by_ticker = {p.ticker: p for p in risk_summary.risk_profiles}
 
         for holding in portfolio.stock_positions:
@@ -232,9 +292,20 @@ class HedgeOrchestrator:
             md = market_data.get(ticker, {})
             rp = risk_by_ticker.get(ticker)
 
-            spot = md.get("spot_price", holding.purchase_price)
-            sigma = md.get("sigma", 0.20)
-            notional = holding.shares * spot
+            notional = self._measured_notional(rp)
+            spot = md.get("spot_price")
+            if notional is None or spot is None:
+                declined[ticker] = (
+                    "no market price was available for it, so its current "
+                    "exposure could not be measured"
+                )
+                continue
+
+            # No substitute volatility. `routes_portfolio` omits `sigma`
+            # deliberately, saying downstream layers "will see it missing
+            # rather than receiving an invented number"; this line used to
+            # read `md.get("sigma", 0.20)` and contradict that promise.
+            sigma = md.get("sigma")
 
             ctx = PositionSizerEngine.build_sizing_context(
                 portfolio_notional=portfolio.total_notional,
@@ -265,8 +336,18 @@ class HedgeOrchestrator:
                 continue
 
             md    = market_data.get(opt.ticker, {})
-            spot  = md.get("spot_price", opt.strike)
-            sigma = md.get("sigma", 0.20)
+            # The strike is not a price. It used to stand in for an absent
+            # spot, which prices and sizes the hedge as though the underlying
+            # were trading exactly at the strike — at-the-money by
+            # construction, whatever the market is doing.
+            spot  = md.get("spot_price")
+            sigma = md.get("sigma")
+            if spot is None:
+                declined[ticker_key] = (
+                    "no market price was available for its underlying, so its "
+                    "delta-adjusted exposure could not be priced"
+                )
+                continue
 
             ctx = PositionSizerEngine.build_sizing_context(
                 portfolio_notional=portfolio.total_notional,
@@ -284,7 +365,7 @@ class HedgeOrchestrator:
             )
             contexts[ticker_key] = ctx
 
-        return contexts
+        return contexts, declined
 
     def _enrich_pricing_ctx_with_candidates(
         self, pricing_ctx: PricingContext, hedge_output
@@ -326,9 +407,18 @@ class HedgeOrchestrator:
         risk_summary: Optional[PortfolioRiskSummary] = None,
     ) -> Dict[str, float]:
         result = {}
+        risk_for_stocks = (
+            {p.ticker: p for p in risk_summary.risk_profiles} if risk_summary else {}
+        )
         for h in portfolio.stock_positions:
-            spot = market_data.get(h.ticker, {}).get("spot_price", h.purchase_price)
-            result[h.ticker] = h.shares * spot
+            # The measured exposure, or no entry at all. This used to be
+            # `h.shares x market_data.get(...).get("spot_price",
+            # h.purchase_price)` — cost basis whenever the price was missing —
+            # and the result feeds L10's cost and protection scores, so an
+            # unmeasured holding was ranked against a notional nobody computed.
+            notional = self._measured_notional(risk_for_stocks.get(h.ticker))
+            if notional is not None:
+                result[h.ticker] = notional
 
         # Options positions: use the delta-adjusted notional from the risk profile
         if risk_summary:
@@ -478,7 +568,12 @@ class HedgeOrchestrator:
         # Enrich pricing_ctx with live spot prices for any hedge ETF tickers
         # selected by L4 that weren't in market_data (e.g., QQQ, sector ETFs)
         self._enrich_pricing_ctx_with_candidates(pricing_ctx, hedge_output)
-        sizing_ctxs = self._build_sizing_contexts(portfolio, market_data, risk_summary)
+        sizing_ctxs, declined_holdings = self._build_sizing_contexts(
+            portfolio, market_data, risk_summary
+        )
+        # Before L6 prices anything: a holding with no measurable exposure
+        # leaves the pipeline here, so no later layer reaches for a substitute.
+        self._decline_unpriced(hedge_output, declined_holdings)
         holding_notionals = self._holding_notionals(portfolio, market_data, risk_summary)
 
         # ── L6: Pricing ───────────────────────────────────────────────────────
@@ -501,6 +596,7 @@ class HedgeOrchestrator:
                 hedge_output = self._l9.run(
                     hedge_output,
                     market_data=market_data,
+                    holding_notionals=holding_notionals,
                     risk_free_rate=self._risk_free_rate(market_data),
                     hedge_horizon_days=portfolio.hedge_horizon_days,
                 )

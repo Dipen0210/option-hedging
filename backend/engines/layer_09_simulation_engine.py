@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from backend.models.hedge_models import HedgeOutput, InstrumentCandidate
 from backend.core.simulation.monte_carlo import run_gbm
@@ -144,6 +144,7 @@ class SimulationEngine:
         self,
         hedge_output: HedgeOutput,
         market_data: Dict[str, Dict],
+        holding_notionals: Optional[Dict[str, float]] = None,
         risk_free_rate: float = 0.053,
         hedge_horizon_days: int = 180,
     ) -> HedgeOutput:
@@ -151,15 +152,59 @@ class SimulationEngine:
         T = hedge_horizon_days / 365.25
 
         tasks: List[tuple] = []
+        unsimulated: List[str] = []
         for rec in hedge_output.recommendations:
             asset_ticker = rec.asset_ticker
             md = market_data.get(asset_ticker, {})
-            asset_spot = md.get("spot_price", 100.0)
-            asset_sigma = md.get("sigma", 0.20)
-            asset_notional = md.get("notional", hedge_output.portfolio_notional)
+
+            # Every input to a Monte Carlo path has to be measured. These
+            # three lines used to read:
+            #
+            #     asset_spot     = md.get("spot_price", 100.0)
+            #     asset_sigma    = md.get("sigma", 0.20)
+            #     asset_notional = md.get("notional", hedge_output.portfolio_notional)
+            #
+            # A $100 starting price, a 20% volatility, and — because nothing
+            # ever writes `md["notional"]` — the whole portfolio's exposure as
+            # the holding's, on *every* run. The simulation's outputs are not
+            # internal: `sim_var_reduction_pct`, `sim_expected_protection` and
+            # every `scenario_*_protection` ratio are divided by that notional
+            # and shipped to the user, so each was scaled by the ratio of the
+            # portfolio to the holding.
+            asset_spot = md.get("spot_price")
+            asset_sigma = md.get("sigma")
+            # The same map L10 scores against — L3's `current_price x shares`,
+            # keyed by holding. `rec.unhedged_risk` is not an option here: L12
+            # populates it, three layers after this one.
+            asset_notional = (holding_notionals or {}).get(asset_ticker)
+
+            if asset_spot is None or asset_sigma is None or not asset_notional:
+                if rec.candidates:
+                    missing = [
+                        name for name, value in (
+                            ("spot price", asset_spot),
+                            ("volatility", asset_sigma),
+                            ("measured notional", asset_notional),
+                        ) if not value
+                    ]
+                    logger.warning(
+                        "L9: not simulating %d candidate(s) for %s — missing %s",
+                        len(rec.candidates), asset_ticker, ", ".join(missing),
+                    )
+                    unsimulated.append(asset_ticker)
+                continue
 
             for cand in rec.candidates:
                 tasks.append((cand, asset_spot, asset_sigma, asset_notional))
+
+        if unsimulated:
+            hedge_output.warnings.append(
+                "Scenario and simulation figures are unavailable for "
+                f"{', '.join(sorted(set(unsimulated)))}: the inputs a "
+                "simulation needs were not measured for "
+                f"{'them' if len(set(unsimulated)) > 1 else 'it'}. The hedge "
+                "figures shown are computed, not simulated."
+            )
 
         logger.info("L9 SimulationEngine: simulating %d candidates", len(tasks))
 

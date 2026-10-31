@@ -16,7 +16,11 @@ Roll cost is incorporated into total_cost from PriceResult.extended.
 """
 from __future__ import annotations
 
+import logging
+
 from backend.core.sizing.base_sizer import BaseSizer, SizingContext, SizingResult
+
+logger = logging.getLogger(__name__)
 
 # Contract sizes by commodity ticker
 _CONTRACT_SIZE = {
@@ -42,8 +46,20 @@ class CommoditySizer(BaseSizer):
             return SizingResult(n_contracts=0, total_cost=0.0, notional_hedged=0.0)
 
         contract_size = _CONTRACT_SIZE.get(ticker, _DEFAULT_CONTRACT_SIZE)
-        sigma_s = ctx.spot_vol if ctx.spot_vol > 0 else 0.20
-        sigma_f = ctx.futures_vol if ctx.futures_vol > 0 else sigma_s
+
+        # The min-variance ratio below is h* = rho x sigma_s / sigma_f, so both
+        # volatilities set the contract count directly. These two lines used to
+        # read `ctx.spot_vol if ctx.spot_vol > 0 else 0.20` — an unmeasured
+        # volatility became 20%, and the size that followed looked measured.
+        sigma_s = ctx.spot_vol
+        sigma_f = ctx.futures_vol or sigma_s
+        if not sigma_s or not sigma_f:
+            logger.warning(
+                "%s: declining to size — spot_vol=%r futures_vol=%r; the "
+                "minimum-variance hedge ratio needs both",
+                ticker, ctx.spot_vol, ctx.futures_vol,
+            )
+            return SizingResult(n_contracts=0, total_cost=0.0, notional_hedged=0.0)
         rho = ctx.correlation
 
         # Minimum-variance hedge ratio

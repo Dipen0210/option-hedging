@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
     from backend.models.hedge_models import InstrumentCandidate
@@ -25,8 +25,11 @@ class SizingContext:
     beta: float = 1.0                   # portfolio beta vs hedge instrument
     max_premium_pct: float = 0.02       # max cost as % of holding_notional
     correlation: float = 0.85           # ρ for commodity min-variance
-    spot_vol: float = 0.20              # σ of the spot asset (for commodity)
-    futures_vol: float = 0.22           # σ of futures (for commodity)
+    # No default: a volatility is measured or it is absent. 0.20 and 0.22 sat
+    # here, so a context built without them carried two plausible σ values the
+    # product had not computed, straight into the min-variance hedge ratio.
+    spot_vol: Optional[float] = None    # σ of the spot asset (for commodity)
+    futures_vol: Optional[float] = None # σ of futures (for commodity)
     portfolio_dv01: float = 0.0         # total portfolio DV01 (for IR)
     portfolio_cs01: float = 0.0         # total portfolio CS01 (for credit)
     fx_exposure: float = 0.0            # exact FX exposure in base currency

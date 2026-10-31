@@ -228,7 +228,24 @@ class EvaluatorEngine:
         n_scored = 0
 
         for rec in hedge_output.recommendations:
-            notional = holding_notionals.get(rec.asset_ticker, hedge_output.portfolio_notional)
+            # The holding's own measured notional, or nothing. This used to
+            # fall back to `hedge_output.portfolio_notional`, scoring a single
+            # holding's hedge against the whole portfolio's exposure: the cost
+            # score read as cheap and the protection score as negligible,
+            # purely because the denominator belonged to a different quantity.
+            # The orchestrator withdraws candidates for a holding it could not
+            # measure, so an absent key here means the figure genuinely is not
+            # known and the honest result is to leave the score unset.
+            notional = holding_notionals.get(rec.asset_ticker)
+            if notional is None:
+                if rec.candidates:
+                    logger.warning(
+                        "L10: no measured notional for %s — %d candidate(s) "
+                        "left unscored rather than scored against the "
+                        "portfolio total",
+                        rec.asset_ticker, len(rec.candidates),
+                    )
+                continue
             for cand in rec.candidates:
                 cand.score = score_candidate(cand, notional, regime)
                 n_scored += 1

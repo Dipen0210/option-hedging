@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from backend.models.hedge_models import HedgeOutput, InstrumentCandidate
 from backend.core.sizing import SIZER_REGISTRY
@@ -109,8 +109,8 @@ class PositionSizerEngine:
         hedge_ratio: float = 1.0,
         max_premium_pct: float = 0.02,
         correlation: float = 0.85,
-        spot_vol: float = 0.20,
-        futures_vol: float = 0.22,
+        spot_vol: Optional[float] = None,
+        futures_vol: Optional[float] = None,
         portfolio_dv01: float = 0.0,
         portfolio_cs01: float = 0.0,
         fx_exposure: float = 0.0,
@@ -153,19 +153,21 @@ class PositionSizerEngine:
         logger.info("L7 PositionSizerEngine: sizing %d candidates", len(tasks))
 
         futures_map = {}
+        unsizable: List[tuple[int, int]] = []
         with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
             for ri, ci, cand in tasks:
                 # Pick context: by asset ticker being hedged (parent holding)
                 rec = hedge_output.recommendations[ri]
                 ctx = sizing_contexts.get(rec.asset_ticker)
                 if ctx is None:
-                    # fallback minimal context
-                    ctx = SizingContext(
-                        portfolio_notional=hedge_output.portfolio_notional,
-                        holding_notional=hedge_output.portfolio_notional,
-                    )
-                    # inject spot price for equity sizer
-                    ctx.extended["spot_price"] = cand.extended_metrics.get("spot_price", 0.0)
+                    # No context means nobody measured this holding's exposure.
+                    # The old fallback built one with
+                    # `holding_notional=hedge_output.portfolio_notional`, so a
+                    # single holding was sized as if it were the entire
+                    # portfolio — the larger the portfolio, the larger the
+                    # over-hedge, and the result looked deliberate.
+                    unsizable.append((ri, ci))
+                    continue
 
                 pr = _build_price_result(cand)
                 fut = pool.submit(_size_one, cand, pr, ctx)
@@ -182,6 +184,26 @@ class PositionSizerEngine:
                     )
                 except Exception as exc:
                     logger.error("Future failed for rec[%d] cand[%d]: %s", ri, ci, exc)
+
+        # Drop in reverse index order so earlier indices stay valid.
+        for ri, ci in sorted(unsizable, reverse=True):
+            rec = hedge_output.recommendations[ri]
+            dropped = rec.candidates.pop(ci)
+            logger.warning(
+                "L7: dropping %s %s for %s — no sizing context, so the "
+                "holding's exposure was never measured",
+                dropped.strategy, dropped.ticker, rec.asset_ticker,
+            )
+        if unsizable:
+            tickers = sorted({
+                hedge_output.recommendations[ri].asset_ticker
+                for ri, _ in unsizable
+            })
+            hedge_output.warnings.append(
+                f"{', '.join(tickers)}: candidates were withdrawn because the "
+                "holding's exposure could not be measured, so no position size "
+                "could be derived for them."
+            )
 
         elapsed = time.perf_counter() - t0
         logger.info("L7 PositionSizerEngine done in %.3fs", elapsed)
