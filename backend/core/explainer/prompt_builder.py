@@ -36,9 +36,11 @@ You are a senior derivatives trader presenting hedge recommendations to a portfo
 
 ## Core Rules
 
-1. Every claim needs a number. Never make a qualitative statement without citing the specific figure from the input data (delta_per_contract, theta_daily_per_contract, basis_risk_r2, total_cost_usd, strike, var_coverage_pct, VIX, etc.). Always use delta_per_contract (not position_delta) when mentioning delta in explanations.
+1. Every claim needs a number. Never make a qualitative statement without citing the specific figure from the input data (delta_per_contract, theta_daily_per_contract, basis_risk_r2, total_cost_usd, strike, holding_var_covered_pct, VIX, etc.). Always use delta_per_contract (not position_delta) when mentioning delta in explanations.
 
 1a. Every number comes from the input, or is not written. A field whose value is null was not measured: omit the claim that would have cited it rather than estimating one, deriving one from the other fields, or reusing a number given for something else. Rule 1 is a requirement on claims you choose to make, not a licence to supply a figure the input does not contain. If that leaves nothing to say about a position's size, say nothing about its size.
+
+1b. A figure describes exactly what its field name says, and nothing wider. `holding_var_usd`, `cost_pct_of_holding_var` and `holding_var_covered_pct` are measured against that one holding's VaR, not the portfolio's — never describe them as covering, costing or reducing "portfolio VaR". The portfolio's own figure is `portfolio.var_5pct_usd`, and only it may be called portfolio VaR. Likewise, what a hedge *costs* and what it *protects* are different quantities: `cost_pct_of_holding_var` is cost relative to risk and is never a statement about protection, while `holding_var_covered_pct` is how much of that holding's VaR the position's maximum payoff covers.
 
 2. Strategy mechanics must match the language. Use these mappings:
    - Long put / protective put: when_works_best = underlying drops sharply (cite delta × expected move); when_fails = IV crush post-event (cite theta decay rate)
@@ -226,25 +228,58 @@ class PromptBuilder:
                 "candidates": [_candidate_to_dict(c) for c in candidates[:3]],
             })
 
-        # Build var lookup for coverage calculation
-        var_by_ticker = {p.ticker: round(p.var_5pct) for p in risk_summary.risk_profiles}
+        # Each holding's own measured VaR, keyed by ticker. `var_5pct` is 0.0
+        # on a profile whose risk could not be measured, which is why the
+        # lookup below distinguishes absent from zero instead of dividing.
+        var_by_ticker = {
+            p.ticker: p.var_5pct
+            for p in risk_summary.risk_profiles
+            if p.data_available and p.var_5pct
+        }
 
         top_candidates = []
         for rec in hedge_output.recommendations:
             if rec.candidates:
                 top = rec.candidates[0]
-                holding_var = var_by_ticker.get(rec.asset_ticker, 1)
                 cost = round(top.total_cost)
-                var_coverage_pct = round(cost / holding_var * 100, 1) if holding_var else 0
+                # This used to be one field called `var_coverage_pct` holding
+                # `cost / holding_var`, which is not coverage — it is what the
+                # hedge costs relative to the risk. The model read the name and
+                # wrote "covers 9.3% of portfolio VaR" for a put that cost 9.3%
+                # of AAPL's VaR and actually protected 82% of it: a cost ratio
+                # published as a protection claim, understating the hedge, and
+                # attributed to the portfolio when the denominator was one
+                # holding's. The two quantities are now separate fields, each
+                # naming its own denominator.
+                #
+                # The old denominator defaulted to 1 when a ticker was missing
+                # from the lookup (`.get(ticker, 1)`), turning a $1,312 hedge
+                # into "131250%", and to 0 when VaR was zero, which reads as
+                # "this hedge covers nothing" rather than "VaR was not
+                # measured". Both are now None, and the system prompt's null
+                # rule makes the model omit the claim.
+                holding_var = var_by_ticker.get(rec.asset_ticker)
+                cost_pct_of_holding_var = (
+                    round(cost / holding_var * 100, 1) if holding_var else None
+                )
+                holding_var_covered_pct = (
+                    round(top.max_protection / holding_var * 100, 1)
+                    if holding_var and top.max_protection else None
+                )
                 top_candidates.append({
-                    "holding":          rec.asset_ticker,
-                    "strategy":         top.strategy,
-                    "ticker":           top.ticker,
-                    "strike":           top.strike,
-                    "expiry_date":      top.expiry_date,
-                    "cost_usd":         cost,
-                    "var_coverage_pct": var_coverage_pct,
-                    "score":            top.score,
+                    "holding":                 rec.asset_ticker,
+                    "strategy":                top.strategy,
+                    "ticker":                  top.ticker,
+                    "strike":                  top.strike,
+                    "expiry_date":             top.expiry_date,
+                    "cost_usd":                cost,
+                    "holding_var_usd":         round(holding_var) if holding_var else None,
+                    "max_protection_usd":      (
+                        round(top.max_protection) if top.max_protection else None
+                    ),
+                    "cost_pct_of_holding_var": cost_pct_of_holding_var,
+                    "holding_var_covered_pct": holding_var_covered_pct,
+                    "score":                   top.score,
                 })
 
         return {
