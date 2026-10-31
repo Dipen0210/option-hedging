@@ -1,6 +1,5 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import Any, Dict, List, Optional
-from datetime import date
 
 
 class InstrumentCandidate(BaseModel):

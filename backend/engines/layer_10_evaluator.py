@@ -23,7 +23,6 @@ Also computes efficiency_ratio (|lambda| per $ of premium).
 from __future__ import annotations
 
 import logging
-import math
 import time
 from typing import Dict, List
 

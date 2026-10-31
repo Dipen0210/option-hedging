@@ -2,7 +2,6 @@
 Hedge ratio and position sizing math.
 Pure quant math — no ML.
 """
-import math
 from typing import List, Dict
 
 

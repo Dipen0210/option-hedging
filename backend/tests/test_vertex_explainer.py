@@ -25,7 +25,6 @@ The stubs are imported from the Gemini tests rather than rewritten: these two
 providers must not drift apart in what a test considers a well-formed
 response.
 """
-import json
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -333,19 +332,26 @@ class TestConfiguration:
         assert ex.explain_all({"positions": [], "portfolio": {}}).portfolio.summary == ""
         assert session.requests == []
 
-    def test_an_explicitly_empty_project_does_not_fall_back_to_the_configured_one(self):
+    def test_an_explicitly_empty_project_does_not_fall_back_to_the_configured_one(
+        self, monkeypatch
+    ):
         """
         The sentinel rule. With a falsiness test, a caller that deliberately
         passes no project silently gets the ambient configured one — which on
         a developer machine is a live, billed project the caller never named.
+
+        The configured value is installed here rather than read from the
+        environment. The first version of this test asserted that a project
+        was already configured and told the reader to put one in
+        backend/.env — which passed on the machine it was written on and
+        failed in CI, where no .env exists. A test that needs a developer's
+        local config to be meaningful is testing that machine, not this code.
         """
         from backend.config.settings import get_settings
-        assert get_settings().vertex_project, (
-            "this test is vacuous unless a project is configured; "
-            "set VERTEX_PROJECT in backend/.env"
-        )
+
+        monkeypatch.setattr(get_settings(), "vertex_project", "configured-project")
         assert VertexExplainer(project="")._project == ""
-        assert VertexExplainer()._project == get_settings().vertex_project
+        assert VertexExplainer()._project == "configured-project"
 
     def test_the_factory_returns_the_vertex_provider(self):
         ex = get_explainer("vertex")

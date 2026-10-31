@@ -19,7 +19,6 @@ isolation.
 """
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from backend.tests.fixtures.dockerignore import excluded as dockerignore_excluded

@@ -25,7 +25,7 @@ no test depends on a market being open or on Yahoo answering.
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from datetime import date, timedelta
+from datetime import date
 
 import numpy as np
 import pandas as pd

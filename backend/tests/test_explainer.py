@@ -8,7 +8,7 @@ Tests cover:
   - BaseLLMExplainer contract (mock subclass)
   - LLMExplainerEngine merging logic
   - Graceful fallback when LLM unavailable or returns bad JSON
-  - JSON extraction utility (_extract_json)
+  - JSON extraction utility (extract_json)
   - ClaudeExplainer / OllamaExplainer parse helpers (with synthetic JSON)
   - get_explainer factory routing
   - HedgeOutput model accepts new LLM fields
@@ -355,21 +355,21 @@ class TestLLMExplainerEngine:
 # ── JSON extraction utility ───────────────────────────────────────────────────
 
 def test_extract_json_strips_markdown_fence():
-    from backend.core.explainer.claude_explainer import _extract_json
+    from backend.core.explainer.response_parsers import extract_json
     raw = '```json\n[{"key": "value"}]\n```'
-    out = _extract_json(raw)
+    out = extract_json(raw)
     parsed = json.loads(out)
     assert parsed[0]["key"] == "value"
 
 def test_extract_json_plain_passthrough():
-    from backend.core.explainer.claude_explainer import _extract_json
+    from backend.core.explainer.response_parsers import extract_json
     raw = '[{"key": "value"}]'
-    assert _extract_json(raw) == raw
+    assert extract_json(raw) == raw
 
 def test_extract_json_strips_fence_without_language():
-    from backend.core.explainer.claude_explainer import _extract_json
+    from backend.core.explainer.response_parsers import extract_json
     raw = '```\n{"a": 1}\n```'
-    out = _extract_json(raw)
+    out = extract_json(raw)
     assert json.loads(out) == {"a": 1}
 
 

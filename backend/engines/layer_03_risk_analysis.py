@@ -17,7 +17,7 @@ import logging
 import numpy as np
 import pandas as pd
 from typing import List, Dict
-from backend.models.portfolio_models import PortfolioInput, PortfolioPosition
+from backend.models.portfolio_models import PortfolioInput
 from backend.models.risk_models import RegimeState, RiskProfile, PortfolioRiskSummary, PortfolioGreeks
 from backend.data import data_quality as dq
 from backend.core.risk.factor_decomposer import InsufficientFactorData

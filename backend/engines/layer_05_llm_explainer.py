@@ -24,7 +24,7 @@ LLM provider is swapped via settings.llm_provider:
 """
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from backend.core.explainer import get_explainer, PromptBuilder
 from backend.core.explainer.base_explainer import CandidateExplanation

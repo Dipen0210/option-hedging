@@ -174,20 +174,3 @@ class HuggingFaceExplainer(BaseLLMExplainer):
         return parse_combined(raw, context, "HuggingFace")
 
 
-def _is_rate_limit(exc: Exception) -> bool:
-    """
-    Deprecated — kept only because it was public.
-
-    It matched the bare substrings "429" and "quota" anywhere in an error
-    message, which classified HuggingFace's HTTP 402 "You have no remaining
-    credits" as a transient rate limit whenever those digits turned up in the
-    appended request ID. Use `raise_if_provider_refused`, which reads the HTTP
-    status and only falls back to wording when there is none.
-    """
-    try:
-        raise_if_provider_refused(exc, "huggingface")
-    except LLMRateLimitError:
-        return True
-    except LLMProviderRejectedError:
-        return False
-    return False

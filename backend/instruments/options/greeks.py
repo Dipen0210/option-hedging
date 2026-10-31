@@ -74,21 +74,6 @@ def collar_greeks(
     ])
 
 
-def bull_put_spread_greeks(
-    long_put_greeks: GreeksDict,
-    short_put_greeks: GreeksDict,
-    n_contracts: int = 1,
-) -> GreeksDict:
-    """
-    Short higher-strike put + long lower-strike put.
-    Cheaper than naked put; capped protection.
-    """
-    return net_greeks([
-        (short_put_greeks, -n_contracts),
-        (long_put_greeks,  +n_contracts),
-    ])
-
-
 def bear_put_spread_greeks(
     long_put_greeks: GreeksDict,
     short_put_greeks: GreeksDict,
@@ -101,33 +86,6 @@ def bear_put_spread_greeks(
     return net_greeks([
         (long_put_greeks,  +n_contracts),
         (short_put_greeks, -n_contracts),
-    ])
-
-
-def protective_put_greeks(
-    stock_delta: float,
-    put_greeks: GreeksDict,
-    n_contracts: int = 1,
-    shares_per_contract: int = 100,
-) -> GreeksDict:
-    """
-    Stock position + long puts.
-    stock_delta = 1.0 × number_of_shares (in delta units, so just shares).
-    Net delta = shares + (put_delta × n_contracts × 100).
-    """
-    stock_leg: GreeksDict = {
-        "delta":   stock_delta,
-        "gamma":   0.0,
-        "theta":   0.0,
-        "vega":    0.0,
-        "lambda_": 0.0,
-        "price":   0.0,
-    }
-    # 1 option contract covers `shares_per_contract` shares
-    effective_qty = n_contracts * shares_per_contract
-    return net_greeks([
-        (stock_leg,  1),
-        (put_greeks, effective_qty),
     ])
 
 

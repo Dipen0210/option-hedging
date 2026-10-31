@@ -175,20 +175,12 @@ class PortfolioInput(BaseModel):
 
 
 # ── Backwards-compat alias ─────────────────────────────────────────────────────
-# L3 / L4 engines reference HoldingInput and PortfolioPosition — keep these
-# pointing at StockPosition so existing engine code doesn't break.
+# An earlier name for StockPosition. No engine uses it; two test modules still
+# import it, so the alias stays until they are renamed. The note here used to
+# claim the L3/L4 engines referenced HoldingInput and a PortfolioPosition
+# model — neither was true: nothing referenced PortfolioPosition at all, and
+# it has been removed.
 
 HoldingInput = StockPosition
 
 
-class PortfolioPosition(BaseModel):
-    """Enriched holding after market data fetch."""
-    ticker: str
-    shares: float
-    purchase_price: float
-    current_price: float
-    notional_value: float
-    unrealized_pnl: float
-    unrealized_pnl_pct: float
-    asset_class: str
-    weight_in_portfolio: float

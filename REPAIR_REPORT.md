@@ -922,7 +922,8 @@ the overnight snapshot rather than the assertion relaxed).
 
 | Area | File | Classes |
 |---|---|---|
-| Options pricing | `test_pricing.py`, `test_instruments.py` | BSM, binomial, Black-76, Greeks, sizer |
+| Options pricing | `test_instruments.py` | BSM, binomial, Black-76, Greeks, sizer |
+| Smoke (imports, settings, fixture, cache) | `test_smoke.py` | 5 tests |
 | IV integrity | `test_iv_plausibility.py` | 6 |
 | Instrument selection | `test_selector.py` | 14 (incl. the R2 no-market gate) |
 | Sizing | `test_sizing.py` | 8 |
@@ -1341,6 +1342,53 @@ defensible and more impressive than "production fintech platform," because it
 demonstrates knowing the difference.
 
 ---
+
+## Appendix — the structure cleanup, and the test that only passed here
+
+Two things, closed 2026-10-30.
+
+**A test made a developer's config a precondition for the suite.** The Vertex
+work shipped green locally and turned CI red. One test,
+`test_an_explicitly_empty_project_does_not_fall_back_to_the_configured_one`,
+asserted that a project *was already configured* before checking that
+`project=""` is not silently replaced by it — and told the reader to put one in
+`backend/.env`. That holds on the machine it was written on and nowhere else;
+CI has no `.env`, so the guard fired and the suite failed. The assertion the
+test exists for was fine; its precondition was ambient. It now installs the
+configured value itself with `monkeypatch`, so it tests this code instead of
+this machine. The suite is now run both ways — with `backend/.env` in place and
+with it moved aside — and passes identically, which is the check that would
+have caught it.
+
+**The repository advertised an architecture that was not there.** Thirty-eight
+files were empty. `backend/execution/` held five empty broker modules —
+`alpaca_broker.py`, `paper_broker.py`, `order_builder.py`, `twap_executor.py`,
+`base_broker.py` — so the directory listing implied an execution path exists in
+a product that must not trade. `backend/instruments/` held ten empty
+instrument modules beside the real `options/` package, `backend/engines/` held
+four phantom layers (`layer_01_input_parser`, `layer_03b_stress_monitor`,
+`layer_04_scenario_engine`, `layer_05_instrument_selector`) whose duplicate
+numbers made the pipeline unreadable, and `backend/core/pricing/` held six
+empty pricers beside the real ones. One of them,
+`backend/instruments/inverse_etfs.py`, sat in the same directory as the real
+`inverse_etfs/` package — a module and a package competing for one name, which
+resolves by import precedence rather than by intent.
+
+Removed with them: two dead modules, nine dead definitions and 35 unused
+imports. `backend/data/rates_data.py` was the one that mattered — nothing
+imported it, the live rate comes from `market_data.get_risk_free_rate()`, and
+it carried `{"3m": 0.045, "5y": 0.043, "10y": 0.042, "30y": 0.044}` as a silent
+fallback for a failed curve fetch plus a bare `return 0.045` for SOFR. Dead
+code cannot fabricate a yield curve, but code that is wired in later can, and
+the fallback was written to look like data.
+
+`test_pricing.py` is now `test_smoke.py`. It contained no pricing assertion and
+never had one, while the coverage table above credited the name with BSM,
+binomial, Black-76, Greeks and sizing. That coverage exists, in
+`test_instruments.py`. The table and the filename both said otherwise.
+
+Scope: no behaviour changed. 769 passed, 31 skipped, before and after, and the
+FastAPI app imports with all 20 routes registered.
 
 ## Appendix — R1, closed 2026-10-29
 

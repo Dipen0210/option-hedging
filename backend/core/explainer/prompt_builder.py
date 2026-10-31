@@ -9,7 +9,7 @@ Two prompt types:
   1. candidates_context — per-holding, per-candidate explanations
   2. portfolio_context  — portfolio-level summary and risk narrative
 """
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 
 # ── System prompts ─────────────────────────────────────────────────────────────

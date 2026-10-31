@@ -16,11 +16,10 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from backend.models.hedge_models import (
     HedgeOutput,
-    HedgeRecommendation,
     InstrumentCandidate,
     RiskEstimateProvenance,
     UnhedgedRisk,

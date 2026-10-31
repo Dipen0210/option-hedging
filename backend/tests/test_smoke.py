@@ -1,6 +1,15 @@
 """
-Phase 1 smoke tests — run once BSM pricer is implemented.
-These are stubs now; assertions are filled in as each pricer is built.
+Smoke tests for the things every other test depends on: that the model
+modules import, that settings load, that the sample portfolio fixture still
+parses, and that the response cache stores and expires entries.
+
+This file was called test_pricing.py and carried a docstring saying its
+assertions would be filled in "as each pricer is built". No pricing
+assertion was ever added, and the suite's coverage table credited the name
+with covering BSM, binomial, Black-76, Greeks and sizing — none of which is
+here. That coverage is real, but it lives in test_instruments.py. The file
+is named for what it actually asserts so the name cannot make the claim
+again.
 """
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -10,8 +19,11 @@ def test_models_import():
     from backend.models.portfolio_models import PortfolioInput, HoldingInput
     from backend.models.hedge_models import InstrumentCandidate, HedgeOutput
     from backend.models.risk_models import RegimeState, RiskProfile
-    from backend.models.execution_models import OrderInput, ExecutionResult
-    assert True
+
+    # The imports are the assertion: a broken model module raises here.
+    for model in (PortfolioInput, HoldingInput, InstrumentCandidate,
+                  HedgeOutput, RegimeState, RiskProfile):
+        assert isinstance(model, type), model
 
 
 def test_settings_loads():

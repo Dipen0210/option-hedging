@@ -20,7 +20,7 @@ from backend.core.explainer.base_explainer import (
     PortfolioExplanation,
 )
 from backend.core.explainer.prompt_builder import CANDIDATES_SYSTEM, PORTFOLIO_SYSTEM
-from backend.core.explainer.claude_explainer import _extract_json   # reuse parser util
+from backend.core.explainer.response_parsers import extract_json
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,7 @@ class OllamaExplainer(BaseLLMExplainer):
         context: Dict[str, Any],
     ) -> List[CandidateExplanation]:
         try:
-            data = json.loads(_extract_json(raw))
+            data = json.loads(extract_json(raw))
             if not isinstance(data, list):
                 data = [data]
         except (json.JSONDecodeError, ValueError) as e:
@@ -139,7 +139,7 @@ class OllamaExplainer(BaseLLMExplainer):
 
     def _parse_portfolio(self, raw: str) -> PortfolioExplanation:
         try:
-            data = json.loads(_extract_json(raw))
+            data = json.loads(extract_json(raw))
             if not isinstance(data, dict):
                 return PortfolioExplanation()
         except (json.JSONDecodeError, ValueError) as e:

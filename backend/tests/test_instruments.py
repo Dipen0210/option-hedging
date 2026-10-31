@@ -8,8 +8,6 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import math
-import pytest
-import numpy as np
 
 
 # ── BSM pricer ────────────────────────────────────────────────────────────────

@@ -17,7 +17,6 @@ degraded, with the reason, so the API can tell the user what it lost.
 """
 
 import logging
-from typing import Optional
 
 from backend.models.risk_models import RegimeState
 from backend.models.portfolio_models import PortfolioInput

@@ -4,7 +4,6 @@ Black-Scholes-Merton pricer for European options.
 Handles puts and calls. Used for liquid index ETF options (SPY, QQQ, IWM, TLT, GLD).
 """
 import math
-import numpy as np
 from scipy.stats import norm
 from typing import Dict, Optional
 

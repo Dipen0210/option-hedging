@@ -14,7 +14,6 @@ GET  /admin/earnings/{ticker}         — next earnings date for a ticker
 
 import asyncio
 import logging
-import time
 from datetime import date
 from typing import Literal, Optional
 

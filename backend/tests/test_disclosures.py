@@ -14,7 +14,6 @@ deleted "premium shown is theoretical" on the way past, and the API answered
 with a model-derived premium and nothing marking it as one. Every test below
 asserts against the real merge functions the pipeline calls, not a stand-in.
 """
-import pytest
 
 from backend.core import disclosures
 from backend.models.hedge_models import InstrumentCandidate

@@ -27,7 +27,7 @@ Each trigger returns an Alert dict:
   }
 """
 import logging
-from datetime import date, timedelta
+from datetime import date
 from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)

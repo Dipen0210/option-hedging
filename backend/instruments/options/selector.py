@@ -34,9 +34,8 @@ from datetime import date, timedelta
 from typing import Any, List, Dict, Optional, Tuple
 
 from backend.instruments.base import InstrumentSelector
-from backend.instruments.options.bsm_pricer import bsm_price, bsm_greeks
+from backend.instruments.options.bsm_pricer import bsm_greeks
 from backend.instruments.options.binomial_pricer import crr_greeks, early_exercise_premium
-from backend.instruments.options.black76_pricer import black76_price, black76_greeks
 from backend.instruments.options.position_sizer import compute_position
 from backend.instruments.options.greeks import net_greeks, collar_greeks
 from backend.models.risk_models import RiskProfile, RegimeState

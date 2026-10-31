@@ -16,7 +16,6 @@ Roll cost is incorporated into total_cost from PriceResult.extended.
 """
 from __future__ import annotations
 
-import math
 from backend.core.sizing.base_sizer import BaseSizer, SizingContext, SizingResult
 
 # Contract sizes by commodity ticker

@@ -35,7 +35,7 @@ nothing in this codebase maps a ticker to a sector return series, and omitting
 a number is the only honest alternative to making one up.
 """
 import logging
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd

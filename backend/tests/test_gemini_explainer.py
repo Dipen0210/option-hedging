@@ -37,7 +37,7 @@ from backend.core.explainer.base_explainer import (
     LLMRateLimitError,
 )
 from backend.core.explainer import gemini_explainer as gx
-from backend.core.explainer.gemini_explainer import GeminiExplainer, GeminiHTTPError
+from backend.core.explainer.gemini_explainer import GeminiExplainer
 from backend.engines import layer_11_llm_explainer as l11
 from backend.engines.layer_11_llm_explainer import (
     FinalLLMExplainerEngine,

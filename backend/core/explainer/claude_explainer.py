@@ -133,7 +133,7 @@ class ClaudeExplainer(BaseLLMExplainer):
     ) -> List[CandidateExplanation]:
         """Parse JSON array from Claude into CandidateExplanation objects."""
         try:
-            data = json.loads(_extract_json(raw))
+            data = json.loads(extract_json(raw))
             if not isinstance(data, list):
                 data = [data]   # model sometimes wraps in object
         except (json.JSONDecodeError, ValueError) as e:
@@ -160,7 +160,7 @@ class ClaudeExplainer(BaseLLMExplainer):
     def _parse_portfolio(self, raw: str) -> PortfolioExplanation:
         """Parse JSON object from Claude into PortfolioExplanation."""
         try:
-            data = json.loads(_extract_json(raw))
+            data = json.loads(extract_json(raw))
             if not isinstance(data, dict):
                 return PortfolioExplanation()
         except (json.JSONDecodeError, ValueError) as e:
@@ -173,10 +173,3 @@ class ClaudeExplainer(BaseLLMExplainer):
             regime_commentary=data.get("regime_commentary", ""),
             top_recommendation=data.get("top_recommendation", ""),
         )
-
-
-# Moved to response_parsers so the second and third providers share one
-# implementation rather than each carrying a copy. Re-exported under the old
-# name because huggingface_explainer, ollama_explainer and test_explainer all
-# import it from here.
-_extract_json = extract_json

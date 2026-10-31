@@ -565,31 +565,3 @@ def check_option_liquidity(
     cache_set(*cache_key, value=result, ttl=CHAIN_TTL)
     return result
 
-
-# ── Backwards-compatible bundle ──────────────────────────────────────────────
-def get_options_chain(ticker: str, expiry_range_days: tuple = (30, 200)) -> Dict:
-    """
-    Puts and calls for the listed expiry closest to 90 days out within range.
-
-    Raises OptionsDataUnavailable when no listed expiry falls in the window.
-    """
-    today = date.today()
-    min_d = today + timedelta(days=expiry_range_days[0])
-    max_d = today + timedelta(days=expiry_range_days[1])
-
-    valid = [e for e in get_available_expiries(ticker)
-             if min_d <= date.fromisoformat(e) <= max_d]
-    if not valid:
-        raise OptionsDataUnavailable(
-            f"No options expiring within {expiry_range_days} days for {ticker}"
-        )
-
-    target = today + timedelta(days=90)
-    selected = min(valid, key=lambda e: abs((date.fromisoformat(e) - target).days))
-
-    return {
-        "puts": _chain_frame(ticker, selected, "put"),
-        "calls": _chain_frame(ticker, selected, "call"),
-        "expiries": valid,
-        "selected_expiry": selected,
-    }

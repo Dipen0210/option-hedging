@@ -27,7 +27,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
-from backend.models.portfolio_models import PortfolioInput, StockPosition
+from backend.models.portfolio_models import PortfolioInput
 from backend.models.hedge_models import HedgeOutput
 from backend.models.risk_models import RegimeState, PortfolioRiskSummary
 from backend.data import data_quality as dq

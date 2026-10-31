@@ -37,7 +37,6 @@ from backend.core.explainer.base_explainer import (
     LLMProviderRejectedError,
     LLMRateLimitError,
 )
-from backend.core.explainer.huggingface_explainer import HFRateLimitError  # noqa: F401
 
 _RATE_LIMIT_NOTICE = (
     "AI explanations are temporarily unavailable — "

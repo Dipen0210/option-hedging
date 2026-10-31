@@ -63,33 +63,6 @@ def size_by_delta(
     return max(1, math.floor(n))   # floor = conservative (don't over-hedge)
 
 
-def size_by_var(
-    var_dollar: float,
-    option_delta: float,
-    option_price: float,
-    spot_price: float,
-    contract_size: int = 100,
-) -> int:
-    """
-    Alternative sizing: cover the full VaR dollar amount using option delta.
-    N = VaR$ / (|Δ| × contract_size × S)
-    Then check that total premium ≤ VaR$ (options shouldn't cost more than the
-    risk they hedge — if so, return 0 and let the selector skip this leg).
-    """
-    abs_delta = abs(option_delta)
-    if abs_delta < MIN_HEDGE_DELTA or spot_price <= 0:
-        return 0
-
-    n_raw = var_dollar / (abs_delta * contract_size * spot_price)
-    n = max(1, math.floor(n_raw))
-
-    total_cost = n * option_price * contract_size
-    if total_cost > var_dollar:
-        return 0   # cost exceeds risk — not worth it
-
-    return n
-
-
 # ── Budget gate ───────────────────────────────────────────────────────────────
 
 def apply_budget_gate(

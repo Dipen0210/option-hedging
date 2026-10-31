@@ -5,7 +5,7 @@ Used by risk analysis and instrument selector to apply sector-specific hedge log
 """
 import csv
 import os
-from typing import Optional, Dict, List
+from typing import Optional, Dict
 from functools import lru_cache
 from dataclasses import dataclass
 
@@ -74,21 +74,6 @@ def get_sector(ticker: str) -> str:
     """Returns sector string, or 'Unknown' if not in database."""
     info = get_company(ticker)
     return info.sector if info else "Unknown"
-
-
-def get_market_cap(ticker: str) -> float:
-    """Returns market cap float, or 0.0 if not found."""
-    info = get_company(ticker)
-    return info.market_cap if info else 0.0
-
-
-def search_by_sector(sector: str) -> List[CompanyInfo]:
-    """Returns all companies in a given sector."""
-    return [c for c in _load_all().values() if c.sector.lower() == sector.lower()]
-
-
-def get_all_tickers() -> List[str]:
-    return list(_load_all().keys())
 
 
 def ticker_exists(ticker: str) -> bool:

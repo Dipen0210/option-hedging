@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from types import SimpleNamespace
 from typing import Dict, List, Optional
 
@@ -457,7 +457,6 @@ _CACHE_CONSUMERS = (
     "backend.data.vix_data",
     "backend.data.covariance",
     "backend.data.earnings_calendar",
-    "backend.data.rates_data",
 )
 
 
