@@ -4,7 +4,7 @@
 # container image had never been built, five test assertions claimed
 # .dockerignore excluded backend/.env, all five passed, and the image shipped
 # five live API keys in a layer. Only a real build could see it. See
-# REPAIR_REPORT.md §F.
+# docs/REPAIR_REPORT.md §F.
 #
 # So the build runs here, on every push, where it does not depend on anyone
 # remembering to install a container engine. GitHub runners are x86-64, which

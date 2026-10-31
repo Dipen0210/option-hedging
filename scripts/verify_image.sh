@@ -6,7 +6,7 @@
 # else in the repair. Five test assertions asserted that .dockerignore
 # *contained* the right patterns; all five passed; the image they described
 # shipped backend/.env with five live API keys. Nothing short of building and
-# running the thing could see it. See REPAIR_REPORT.md §F.
+# running the thing could see it. See docs/REPAIR_REPORT.md §F.
 #
 # Every check prints PASS/FAIL and the evidence it judged on. Exits non-zero if
 # any check fails, so CI fails on a regression rather than reporting one.

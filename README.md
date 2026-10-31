@@ -99,6 +99,47 @@ Cross-hedges (positively correlated ETFs) and macro hedges (GLD, TLT) are genera
 
 ---
 
+## Repository Layout
+
+```
+backend/              FastAPI service — the deployed container
+  api/                route handlers, auth dependencies
+  core/               pricing, Greeks, risk, sizing, simulation, explainer
+  engines/            the 12-layer pipeline and its orchestrator
+  instruments/        per-asset-class instrument selection
+  ml/regime/          HDBSCAN + GMM regime detection, retrain scheduler
+  ml/volatility/      GARCH volatility estimation
+  data/               market-data providers, caching, quality ledger
+  models/             Pydantic request/response schemas
+  tests/              the suite (857 tests); not shipped in the image
+  requirements.txt        runtime closure, installed by the Dockerfile
+  requirements-dev.txt    the above plus test and tooling dependencies
+
+frontend/             Next.js app — static export, deployed to Vercel
+  app/                routes and page components
+  lib/                api.ts — the API client and its per-endpoint timeouts
+  types/              shared TypeScript types
+
+docs/                 PRD, repair report, deploy runbook, reference PDFs
+scripts/              deploy_backend.sh, verify_image.sh
+.github/workflows/    CI: backend suite, container build, frontend build
+```
+
+Everything else at the root is there because a platform requires that exact
+location and will not look anywhere else:
+
+| File | Required at root by |
+|---|---|
+| `Dockerfile`, `.dockerignore` | the build context, which must contain `backend/` |
+| `.gcloudignore` | `gcloud run deploy --source .` |
+| `vercel.json`, `package.json` | Vercel, which reads config from the repository root and uses the root `package.json` to detect the Next.js version |
+| `pytest.ini` | pytest's rootdir, which is where the registered markers and `--strict-markers` are resolved from |
+
+Moving any of them is not a tidying change — it changes which file the
+platform reads, or silently drops a setting.
+
+---
+
 ## Running Locally
 
 **Backend** — run from the repository root, not from `backend/`. Every import
@@ -133,7 +174,7 @@ backend/.venv/bin/python -m pytest backend/tests -q
 
 The backend is a container on Cloud Run; the frontend is a static export on
 Vercel. There is no serverless backend and no Next.js server — see
-[`DEPLOYMENT.md`](DEPLOYMENT.md) for the runbook, the configured Cloud Run
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the runbook, the configured Cloud Run
 shape and why each value is what it is, and the known open problems.
 
 ```bash

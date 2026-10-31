@@ -6,7 +6,7 @@
     "frontend/next.config.ts), so Vercel serves frontend/out as plain files.",
     "There is no serverless function here and no Next.js server: the backend",
     "is the Cloud Run container built from the repository's Dockerfile. See",
-    "DEPLOYMENT.md.",
+    "docs/DEPLOYMENT.md.",
     "",
     "NEXT_PUBLIC_API_URL is read at BUILD time and inlined into the bundle, so",
     "it is set per environment in the Vercel project, not here, and a change to",

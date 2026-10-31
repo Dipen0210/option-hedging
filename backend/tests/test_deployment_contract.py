@@ -469,7 +469,7 @@ class TestTheImageIsBuildableFromTheRepository:
 GCLOUDIGNORE = REPO / ".gcloudignore"
 DEPLOY_SCRIPT = REPO / "scripts" / "deploy_backend.sh"
 VERCEL_JSON = REPO / "vercel.json"
-RUNBOOK = REPO / "DEPLOYMENT.md"
+RUNBOOK = REPO / "docs" / "DEPLOYMENT.md"
 FRONTEND_API = REPO / "frontend" / "lib" / "api.ts"
 
 
@@ -502,6 +502,8 @@ class TestTheSourceUploadExcludesWhatTheImageExcludes:
         ("frontend/",      "the frontend is deployed by Vercel, not Cloud Run"),
         ("node_modules/",  "the largest directory in the repository"),
         ("*.db",           "the response cache is local runtime state"),
+        ("docs/",          "documentation is not part of the build, and "
+                           "docs/reference holds ~2MB of PDFs"),
     ])
     def test_the_costly_and_dangerous_paths_are_excluded(self, pattern, why):
         body = GCLOUDIGNORE.read_text()
@@ -519,7 +521,7 @@ class TestTheSourceUploadExcludesWhatTheImageExcludes:
         # `**/`-anchored pattern copied here from .dockerignore is a sign the
         # distinction has been lost again, and getting it backwards in the
         # other direction is what shipped five live API keys in an image
-        # layer. See REPAIR_REPORT.md §F.
+        # layer. See docs/REPAIR_REPORT.md §F.
         offenders = [
             l for l in GCLOUDIGNORE.read_text().splitlines()
             if l.strip().startswith("**/")
@@ -690,7 +692,7 @@ class TestTheFrontendDeployUsesTheVerifiedDependencies:
 class TestTheRunbookTheDeploySurfacePointsAt:
     """
     vercel.json, scripts/deploy_backend.sh and the deploy script's refusal
-    message all tell the reader to see DEPLOYMENT.md. A deploy runbook that
+    message all tell the reader to see docs/DEPLOYMENT.md. A deploy runbook that
     does not exist is worse than one that is out of date: the person reading
     the refusal has nowhere to go, and the commands they need are the ones
     that create secrets and IAM bindings, which are not guessable.
@@ -698,7 +700,7 @@ class TestTheRunbookTheDeploySurfacePointsAt:
 
     def test_the_runbook_exists(self):
         assert RUNBOOK.exists(), (
-            "DEPLOYMENT.md is referenced by vercel.json and "
+            "docs/DEPLOYMENT.md is referenced by vercel.json and "
             "scripts/deploy_backend.sh but does not exist"
         )
 

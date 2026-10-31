@@ -66,4 +66,9 @@ out/
 .gitignore
 .vscode/
 *.pdf
+
+# Documentation is not part of the build. Excluding the directory is cheaper
+# than relying on the *.pdf and *.md rules to cover everything in it, and it
+# keeps the staging-bucket upload to the code that actually gets built.
+docs/
 backend/tests/

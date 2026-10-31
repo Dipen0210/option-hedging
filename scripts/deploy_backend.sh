@@ -22,7 +22,7 @@
 #   SERVICE        default optionq-api
 #   SERVICE_ACCOUNT  default optionq-api@$PROJECT_ID.iam.gserviceaccount.com
 #
-# Prerequisites, once per project (see DEPLOYMENT.md for the exact commands):
+# Prerequisites, once per project (see docs/DEPLOYMENT.md for the exact commands):
 #   - run.googleapis.com, cloudbuild.googleapis.com, aiplatform.googleapis.com,
 #     secretmanager.googleapis.com enabled
 #   - secrets ADMIN_API_KEY and CRON_SECRET created in Secret Manager
@@ -95,7 +95,7 @@ missing=()
 [ -n "$FRONTEND_URL" ] || missing+=("FRONTEND_URL")
 if [ ${#missing[@]} -gt 0 ]; then
   echo "Refusing to deploy: ${missing[*]} not set." >&2
-  echo "See the header of this script, or DEPLOYMENT.md." >&2
+  echo "See the header of this script, or docs/DEPLOYMENT.md." >&2
   exit 2
 fi
 
@@ -161,7 +161,7 @@ if [ "$EXECUTE" -ne 1 ]; then
 Nothing was deployed. This was a plan.
 
 Re-run with --execute to apply it. Before the first deploy, confirm the
-prerequisites in DEPLOYMENT.md are in place — the service refuses to start if
+prerequisites in docs/DEPLOYMENT.md are in place — the service refuses to start if
 ADMIN_API_KEY or CRON_SECRET is unset or FRONTEND_URL is not an HTTPS,
 non-localhost origin, so a missing prerequisite surfaces as a revision that
 never becomes healthy.

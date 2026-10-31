@@ -43,6 +43,12 @@
 .github/
 .gitignore
 frontend/
+# docs/ is at the context root, so a bare pattern is the correct form here —
+# the `**/`-anchoring rule above is for patterns aimed inside a subdirectory.
+# **/*.md already excluded the prose; this also keeps docs/reference/*.pdf
+# (1.9MB of it) out of the context transfer.
+docs/
+**/*.pdf
 **/node_modules/
 **/.next/
 **/*.md

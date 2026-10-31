@@ -21,7 +21,7 @@ the directory must already exist and be owned before `USER` switches. The
 Dockerfile `chown`ed this path for exactly that reason while nothing guaranteed
 it was there, and the image turned out not to be buildable from the repository
 at all: it had only ever been built on a machine that happened to have
-untracked models here. CI caught it on its first run. See REPAIR_REPORT.md §F.
+untracked models here. CI caught it on its first run. See docs/REPAIR_REPORT.md §F.
 
 An empty directory is the correct state for a fresh deployment.
 `GMMRegimeDetector.load()` returns `False` when `model_exists()` is `False`,
