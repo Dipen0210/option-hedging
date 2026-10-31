@@ -423,3 +423,102 @@ class TestNoVolatilityIsInvented:
             ),
         )
         assert result.n_contracts > 0
+
+
+# ── L3: the portfolio VaR weights are read, not re-fetched ─────────────────
+
+class TestPortfolioVarWeightsAreTheMeasuredNotionals:
+    """
+    The sixth site of the same pattern, found 2026-10-31 while verifying that
+    the R10 fix's chain held at its source.
+
+    `_compute_portfolio_var` re-called `get_current_price(ticker)` to weight
+    the covariance, with `except Exception: return match.shares *
+    match.purchase_price` under a comment calling it a "graceful fallback".
+    The fetch was redundant — a ticker only reaches `returns_dict` after
+    `_analyze_holding` has already priced it, and that price is sitting on the
+    profile as `notional_value` — and the fallback was silent: no warning, no
+    `dq.record`, while these weights set the whole portfolio's VaR.
+
+    Measured on this two-holding portfolio, one transient failure moved the
+    reported figure by **+48%** (AAPL) or **-18%** (MSFT). The sign depends on
+    whether the mispriced holding is the volatile one, and the negative
+    direction understates the user's risk.
+    """
+    PRICES = {"AAPL": 400.0, "MSFT": 520.0}
+    BASIS = {"AAPL": 150.0, "MSFT": 300.0}
+    SHARES_BY = {"AAPL": 200, "MSFT": 100}
+
+    def _portfolio(self):
+        return PortfolioInput(
+            holdings=[StockPosition(
+                ticker=t, shares=self.SHARES_BY[t], purchase_price=self.BASIS[t],
+                purchase_date=date.today() - timedelta(days=365),
+            ) for t in self.PRICES],
+            total_notional=sum(self.SHARES_BY[t] * self.PRICES[t] for t in self.PRICES),
+        )
+
+    def _returns(self):
+        import numpy as np, pandas as pd
+        rng = np.random.default_rng(7)
+        idx = pd.bdate_range(end="2026-10-30", periods=500)
+        # Deliberately different vols — the weighting only matters if the
+        # assets differ, so equal-vol assets would hide the defect.
+        return {
+            "AAPL": pd.Series(rng.normal(0, 0.010, 500), index=idx),
+            "MSFT": pd.Series(rng.normal(0, 0.030, 500), index=idx),
+        }
+
+    def _profiles(self):
+        out = []
+        for t in self.PRICES:
+            n = self.SHARES_BY[t] * self.PRICES[t]
+            out.append(RiskProfile(
+                ticker=t, asset_class="equity", notional_value=n,
+                beta_vs_spy=1.0, beta_available=True,
+                var_5pct=n * 0.08, cvar_5pct=n * 0.11,
+                var_pct=0.08, cvar_pct=0.11, notional_at_risk=n * 0.08,
+                optimal_hedge_ratio=1.0, regression_hedge_ratio=1.0,
+                tail_correlation=0.6,
+            ))
+        return out
+
+    def test_a_dead_price_feed_does_not_move_the_portfolio_var(self, monkeypatch):
+        from backend.engines.layer_03_risk_analysis import RiskAnalysisEngine
+        import backend.data.market_data as mdmod
+
+        eng = RiskAnalysisEngine()
+        args = (self._returns(), self._portfolio(), self._profiles())
+        base = eng._compute_portfolio_var(*args)
+
+        def boom(ticker):
+            raise RuntimeError("price feed down")
+
+        monkeypatch.setattr(mdmod, "get_current_price", boom)
+        after = eng._compute_portfolio_var(*args)
+
+        assert base["var_dollar"] > 0
+        assert after["var_dollar"] == pytest.approx(base["var_dollar"])
+        assert after["cvar_dollar"] == pytest.approx(base["cvar_dollar"])
+
+    def test_an_unmeasured_holding_gets_no_cost_basis_weight(self):
+        """
+        `data_available=False` means L3 has no figure for that holding. It
+        must weigh nothing, rather than weigh its cost basis.
+        """
+        from backend.engines.layer_03_risk_analysis import RiskAnalysisEngine
+
+        profiles = self._profiles()
+        profiles[0].data_available = False
+        profiles[0].notional_value = self.SHARES_BY["AAPL"] * self.BASIS["AAPL"]
+
+        eng = RiskAnalysisEngine()
+        mixed = eng._compute_portfolio_var(
+            self._returns(), self._portfolio(), profiles,
+        )
+        # With AAPL excluded the portfolio is pure MSFT, the 3%-vol asset, so
+        # the VaR must exceed the blended figure rather than sit below it.
+        blended = eng._compute_portfolio_var(
+            self._returns(), self._portfolio(), self._profiles(),
+        )
+        assert mixed["var_dollar"] > blended["var_dollar"]

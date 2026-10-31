@@ -16,7 +16,7 @@ sector-specific hedge logic downstream (Layer 5).
 import logging
 import numpy as np
 import pandas as pd
-from typing import List, Dict
+from typing import List, Dict, Optional
 from backend.models.portfolio_models import PortfolioInput
 from backend.models.risk_models import RegimeState, RiskProfile, PortfolioRiskSummary, PortfolioGreeks
 from backend.data import data_quality as dq
@@ -98,7 +98,7 @@ class RiskAnalysisEngine:
 
         # Portfolio-level metrics
         portfolio_beta = self._compute_portfolio_beta(risk_profiles, portfolio)
-        port_var = self._compute_portfolio_var(returns_dict, portfolio)
+        port_var = self._compute_portfolio_var(returns_dict, portfolio, risk_profiles)
         corr_matrix, tickers = self._compute_correlation_matrix(returns_dict)
         port_greeks = self._compute_portfolio_greeks(portfolio, regime)
 
@@ -474,9 +474,8 @@ class RiskAnalysisEngine:
         self,
         returns_dict: Dict[str, pd.Series],
         portfolio: PortfolioInput,
+        risk_profiles: Optional[List[RiskProfile]] = None,
     ) -> Dict:
-        from backend.data.market_data import get_current_price
-
         if not returns_dict:
             return {"var_dollar": 0.0, "cvar_dollar": 0.0}
 
@@ -486,17 +485,24 @@ class RiskAnalysisEngine:
         if df.empty:
             return {"var_dollar": 0.0, "cvar_dollar": 0.0}
 
-        # Use current market price, not purchase price, for accurate notional weights
-        def _current_notional(ticker: str) -> float:
-            match = next((h for h in portfolio.stock_positions if h.ticker == ticker), None)
-            if match is None:
-                return 0.0
-            try:
-                return match.shares * get_current_price(ticker)
-            except Exception:
-                return match.shares * match.purchase_price   # graceful fallback
-
-        weights = np.array([_current_notional(t) for t in tickers])
+        # The notional each holding was measured at, read rather than fetched
+        # again. This used to re-call `get_current_price(ticker)` and fall back
+        # to `match.shares * match.purchase_price` under a bare `except`,
+        # commented "graceful fallback". Two things were wrong with it. The
+        # fetch was redundant: a ticker only reaches `returns_dict` after
+        # `_analyze_holding` already priced it, and that price is on the
+        # profile as `notional_value`. And the fallback was silent — no
+        # warning, no `dq.record` — while these weights set the whole
+        # portfolio's VaR. Measured on a two-holding portfolio, one transient
+        # failure moved the reported figure by **+48%** or **-18%** depending
+        # on which holding failed, with nothing in the response saying so; the
+        # negative direction understates the user's risk.
+        measured = {
+            p.ticker: p.notional_value
+            for p in (risk_profiles or [])
+            if p.data_available and p.notional_value
+        }
+        weights = np.array([measured.get(t, 0.0) for t in tickers])
         total_w = weights.sum()
         if total_w == 0:
             return {"var_dollar": 0.0, "cvar_dollar": 0.0}
