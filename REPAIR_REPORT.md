@@ -838,18 +838,19 @@ nothing is pushed and nothing is deployed. See R5 in §C.
 
 | ~~R7~~ | ~~Single-stock return data shows an implausibly weak correlation structure.~~ **CLOSED — and it was never a defect.** Root-caused, not explained away. Two things were conflated. **(a) The data is right.** The product's return series is **byte-identical** to an independent recompute straight from the raw Yahoo JSON — `maxdiff = 0.00e+00` for both the AAPL and the SPY leg — so no stage of the pipeline is distorting it. **(b) The window is the whole story.** `LOOKBACK_DAYS = 252` is what the product actually fits on; the same two series over 500 sessions give AAPL/SPY R²=**0.354**, ρ=**+0.595**, β=**1.03**. Single-stock/index correlation genuinely collapsed over the trailing twelve months — XOM/SPY flips **+0.115 → −0.329** between the two windows — while index-replication pairs are window-invariant by construction (VOO/SPY 0.994 → 0.996). Mega-cap dispersion, correctly measured. And correctly *gated*: SPY is **rejected** as an AAPL cross hedge at R²=0.084 < `MIN_CROSS_R2 = 0.30`, which is the system declining to sell a hedge it cannot justify. | — | The anomaly was real, the alarm was right to raise it, and the answer is that a 252-day ρ of 0.29 is what AAPL/SPY *was* over this particular year. Pinned by the live-provider suite, which asserts both legs carry identical dates and 501 observations. |
 | ~~R8~~ | ~~Zero-share and similar edits re-run against a stale result view.~~ **CLOSED**, and root-caused past the reported symptom: *any* unre-run edit left real figures beside inputs they did not describe — editing 500 shares to 5,000 left a VaR for 500 shares on screen with nothing to say which portfolio it belonged to. The page now records the exact payload each result was computed from, flags divergence with a banner and a re-run button, and clears the result outright when the form can no longer be analysed. Browser-verified, 28/0. | — | The reported case was a validation-path instance of a general staleness problem. |
-| R9 | **L11 is asked to narrate an empty candidate set, and invents a figure doing it.** On a stub-only run (0 candidates) the LLM wrote `top_recommendation` = *"No candidates are currently available to hedge the $30,000 AAPL position"* for a portfolio whose `portfolio_notional` is **$40,000** — apparently 200 shares x the $150 **purchase** price rather than the market price. A wrong dollar figure in the headline field of the response is a fabricated financial result. | **P1** | Found 2026-10-30 while verifying the stub-disclosure fix over HTTP; not fixed in that commit. The root cause is asking a model to summarise nothing — the repair spec's *"do not force a recommendation when no valid hedge exists"*. It is non-deterministic: a second run of the same request produced a figure-free sentence, so a regression test has to pin the *path* (L11 not invoked, or its numbers validated) rather than the text. |
+| ~~R9~~ | ~~L11 narrates with a figure the product did not compute.~~ **CLOSED 2026-10-30, and it was not an LLM hallucination.** A stub-only run put *"the $30,000 AAPL position"* against a `portfolio_notional` of **$40,000**. Root cause: L11 computed the exposure it put in the prompt as `shares x purchase_price` — **cost basis** — while L3 measures `current_price x shares` and VaR, hedge sizing and the budget are all computed on that. The narrative was wrong on **every** run, not just empty ones; on a profitable holding it understated exposure by exactly the unrealised gain. `portfolio_valuation.py` already called that expression `cost_basis`. Fixed: L11 passes the measured `notional_value`, the prompt carries `null` rather than a substitute when nothing was measured, the three system prompts forbid estimating a null field, and a run with no candidate on any holding skips the provider entirely. 13 tests, 11 revert-verified. | — | The empty-run symptom led to a defect in the hedged path. The prompt's own rule — *"every claim needs a number"* — turned a missing field into pressure to supply one, which is why the null rule had to be stated rather than implied. |
 
-**No P0 defect remains open. R6 and R9 are the two items still open.** R1, R2,
-R3, R4, R5, R7 and R8 are closed — R1, R3 and R7 by investigation, R2 by a decision
+**No P0 defect remains open, and R6 is the only item still open.** R1, R2, R3,
+R4, R5, R7, R8 and R9 are closed — R1, R3 and R7 by investigation, R2 by a decision
 now implemented and tested, R4 and R8 by repair, R5 by committing. R6 (warning
 density out of market hours) stays open by judgement: grouping fixed the
 duplication, the market-open run showed most of the remaining volume was
 genuinely degraded pre-market data, and reducing it further risks hiding
-things. R9 (an LLM-authored dollar figure that does not match the computed
-notional) was opened on 2026-10-30 by the HTTP verification of the
-stub-disclosure fix, and is a correctness defect in user-facing text rather
-than in a calculation.
+things. R9 was opened and closed on 2026-10-30: the HTTP verification of the
+stub-disclosure fix showed an LLM-authored dollar figure that did not match
+the computed notional, and tracing it found the pipeline had been handing the
+model cost basis where it meant market exposure — a defect on every run, not
+only the one that exposed it.
 
 **One P0 was found and closed after that sentence was first written**, and the
 sequence is the point. R5 was closed by committing the repair; building the
@@ -1727,13 +1728,54 @@ non-implementation is never reached.)
 **Fixed.** The false cost-and-liquidity claim no longer appears on any path
 where cost and liquidity were not measured.
 
-### Discovered while verifying this, still open
+### Discovered while verifying this, and also fixed
 
-With zero candidates, L11 is still asked to write `top_recommendation`, and in
-one run it produced *"No candidates are currently available to hedge the
-$30,000 AAPL position"* for a portfolio whose `portfolio_notional` is
-**$40,000** — the LLM appears to have multiplied the purchase price rather
-than the market price. A wrong dollar figure in the headline field of the
-response is a fabricated financial result. Logged in §C and fixed separately;
-the repair spec's *"do not force a recommendation when no valid hedge exists"*
-points at the root cause, which is asking a model to narrate an empty set.
+With zero candidates, L11 was still asked to write `top_recommendation`, and
+one run produced *"No candidates are currently available to hedge the $30,000
+AAPL position"* for a portfolio whose `portfolio_notional` is **$40,000**.
+
+That figure was not invented. L11 built the holding exposure for the prompt
+from `shares x purchase_price` — 200 x $150, the **cost basis** — while L3
+measures notional as `current_price x shares` and `portfolio_notional`, VaR,
+hedge sizing and the budget are all computed on that. The narrative therefore
+described a $30,000 position beside a $40,000 one, and on any profitable
+holding it understated the user's exposure by exactly the unrealised gain —
+**on every run, including successful options runs**, not only the empty one
+that surfaced it. `portfolio_valuation.py` already names that same expression
+`cost_basis`; L11 was the only caller treating it as exposure.
+
+Fixed in four parts, because the figure and the pressure to produce one are
+separate problems:
+
+1. L11 passes the measured `risk_profile.notional_value`.
+2. When nothing was measured the prompt carries `null`, not a substitute —
+   cost basis and the portfolio total are each a number the product did not
+   compute for that holding. `_round_or_none` exists because `round(None)`
+   raises, and a crash there would have been reported to the user as an LLM
+   failure.
+3. All three system prompts now state that a null field was not measured and
+   must not be estimated, derived from other fields, or filled with a number
+   given for something else. This had to be said: `COMBINED_SYSTEM`'s first
+   rule is *"every claim needs a number"*, which on its own reads as licence
+   to supply one.
+4. A run with no candidate on any holding does not call the provider at all.
+   There is no hedge to recommend, and the repair spec's *"do not force a
+   recommendation when no valid hedge exists"* is the rule. It gets the
+   deterministic narrative and an `llm_notice` saying the model was not
+   called.
+
+L11's own deterministic text carried the same ⑤ defect as the endpoints above
+and is fixed with them: *"no candidate met the budget, liquidity and
+basis-risk requirements"* and *"N of N holdings have no **affordable** hedge"*
+both named a price screen for holdings where nothing was priced.
+
+**Verification:** `backend/tests/test_llm_narrative_figures.py`, 13 tests,
+**11 of which fail against the pre-fix tree**. Two existing tests in
+`test_var_horizon_label.py` had to be repaired rather than updated: they
+exercised the LLM-substitution disclosure using a fixture with no candidates,
+so after part 4 they were passing through the skip path without the explainer
+being called at all — they would have gone on passing with the substitution
+disclosure removed entirely. They now carry a candidate. Full suite: **796
+passed, 31 skipped**. Confirmed over HTTP: the options narrative states
+*"40000 USD in total notional"*, matching `portfolio_notional`, and the
+stub endpoints produce no dollar figure at all.

@@ -9,7 +9,7 @@ Two prompt types:
   1. candidates_context — per-holding, per-candidate explanations
   2. portfolio_context  — portfolio-level summary and risk narrative
 """
-from typing import Dict, Any
+from typing import Any, Dict, Optional
 
 
 # ── System prompts ─────────────────────────────────────────────────────────────
@@ -27,6 +27,7 @@ For EACH candidate in the input, return a JSON array with objects containing:
   "cons":            list of exactly 2 short strings (max 10 words each)
 
 Reference actual numbers (VIX, beta, cost %, delta) where relevant.
+A field whose value is null was not measured. Omit any claim that would need it. Never estimate, derive or infer a missing figure from the other fields, and never carry a number over from a different field — a figure in this output has to be the figure given for that field.
 Return ONLY a valid JSON array — no markdown, no explanation, no trailing text.\
 """
 
@@ -36,6 +37,8 @@ You are a senior derivatives trader presenting hedge recommendations to a portfo
 ## Core Rules
 
 1. Every claim needs a number. Never make a qualitative statement without citing the specific figure from the input data (delta_per_contract, theta_daily_per_contract, basis_risk_r2, total_cost_usd, strike, var_coverage_pct, VIX, etc.). Always use delta_per_contract (not position_delta) when mentioning delta in explanations.
+
+1a. Every number comes from the input, or is not written. A field whose value is null was not measured: omit the claim that would have cited it rather than estimating one, deriving one from the other fields, or reusing a number given for something else. Rule 1 is a requirement on claims you choose to make, not a licence to supply a figure the input does not contain. If that leaves nothing to say about a position's size, say nothing about its size.
 
 2. Strategy mechanics must match the language. Use these mappings:
    - Long put / protective put: when_works_best = underlying drops sharply (cite delta × expected move); when_fails = IV crush post-event (cite theta decay rate)
@@ -91,6 +94,7 @@ Return a JSON object with exactly these keys:
   "top_recommendation": max 15 words — single best hedge action to take now
 
 Use actual numbers from the data (VIX, beta, notional).
+A field whose value is null was not measured. Omit any claim that would need it. Never estimate, derive or infer a missing figure from the other fields, and never carry a number over from a different field — a figure in this output has to be the figure given for that field.
 Return ONLY a valid JSON object — no markdown, no preamble, no trailing text.\
 """
 
@@ -104,7 +108,7 @@ class PromptBuilder:
     def build_candidates_context(
         self,
         asset_ticker: str,
-        holding_notional: float,
+        holding_notional: Optional[float],
         risk_profile,          # RiskProfile Pydantic model
         candidates: list,      # List[InstrumentCandidate]
         regime,                # RegimeState Pydantic model
@@ -123,7 +127,11 @@ class PromptBuilder:
             "holding": {
                 "ticker":          asset_ticker,
                 "asset_class":     risk_profile.asset_class,
-                "notional_usd":    round(holding_notional),
+                # None when L3 measured no notional for this holding. The key
+                # carries null rather than a stand-in figure, and the system
+                # prompt tells the model to omit any number it is given as
+                # null instead of estimating one.
+                "notional_usd":    _round_or_none(holding_notional),
                 "beta_vs_spy":     round(risk_profile.beta_vs_spy, 3),
                 "var_5pct_usd":    round(risk_profile.var_5pct),
                 "var_horizon_days": risk_profile.var_horizon_calendar_days,
@@ -209,7 +217,7 @@ class PromptBuilder:
             positions_data.append({
                 "asset_ticker": asset_ticker,
                 "holding": {
-                    "notional_usd":        round(holding_notional),
+                    "notional_usd":        _round_or_none(holding_notional),
                     "beta_vs_spy":         round(risk_profile.beta_vs_spy, 3),
                     "var_pct":             round(risk_profile.var_pct * 100, 2),
                     "cvar_pct":            round(risk_profile.cvar_pct * 100, 2),
@@ -256,6 +264,18 @@ class PromptBuilder:
                 "top_hedge_per_holding": top_candidates,
             },
         }
+
+
+def _round_or_none(value: Optional[float]) -> Optional[int]:
+    """
+    Round a figure for the prompt, or pass the absence through.
+
+    `round(None)` raises, and the alternative that suggests itself — falling
+    back to cost basis or to the portfolio total — is how a holding's exposure
+    came to be misstated in the narrative in the first place. A null here is
+    read by the system prompt as "omit this figure".
+    """
+    return None if value is None else round(value)
 
 
 def _candidate_to_dict(c) -> Dict[str, Any]:

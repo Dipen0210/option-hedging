@@ -35,7 +35,11 @@ from backend.engines.layer_11_llm_explainer import (
     _var_horizon_phrase,
 )
 from backend.engines.layer_12_output_formatter import OutputFormatterEngine
-from backend.models.hedge_models import HedgeOutput, HedgeRecommendation
+from backend.models.hedge_models import (
+    HedgeOutput,
+    HedgeRecommendation,
+    InstrumentCandidate,
+)
 from backend.models.risk_models import (
     PortfolioRiskSummary,
     RegimeState,
@@ -415,12 +419,38 @@ class TestEngineDisclosesSubstitution:
                 top_recommendation="",
             )
 
+    @staticmethod
+    def _output_with_a_candidate() -> HedgeOutput:
+        """
+        One candidate, because this class is about what the engine discloses
+        when the *model* writes nothing.
+
+        The shared `_hedge_output()` carries no candidates, and L11 no longer
+        calls a provider for a run where no holding has one — there is nothing
+        to explain, and asking a model to recommend a hedge that does not
+        exist is what produced a fabricated position size. With that fixture
+        these tests still passed, but through the skip path: the explainer was
+        never invoked and the notice they asserted on was the
+        no-candidate one, which also mentions "computed figures". They would
+        have gone on passing with the substitution disclosure entirely
+        removed.
+        """
+        out = _hedge_output()
+        out.recommendations[0].candidates = [InstrumentCandidate(
+            instrument_type="option",
+            asset_class="equity",
+            ticker="AAPL",
+            strategy="protective_put",
+            n_contracts=4,
+        )]
+        return out
+
     def _run(self, monkeypatch, explainer):
         import backend.engines.layer_11_llm_explainer as l11
 
         monkeypatch.setattr(l11, "get_explainer", lambda provider=None: explainer)
         return l11.FinalLLMExplainerEngine().run(
-            hedge_output=_hedge_output(),
+            hedge_output=self._output_with_a_candidate(),
             portfolio=self._portfolio(),
             risk_summary=_summary(profile=_profile(ticker="AAPL")),
             regime=_regime(),

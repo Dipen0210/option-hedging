@@ -79,6 +79,13 @@ _UNAVAILABLE_NOTICE = (
     "data are unaffected."
 )
 
+_NO_CANDIDATE_NOTICE = (
+    "No hedge candidate was produced for any holding in this run, so there "
+    "was nothing for the language model to explain and it was not called. "
+    "The narrative below is a restatement of the computed figures. The "
+    "warnings on this response say why each holding is unhedged."
+)
+
 _FAILED_NOTICE = (
     "AI explanations could not be generated for this run. The narrative "
     "below was generated directly from the computed figures instead. All "
@@ -193,9 +200,15 @@ def _deterministic_narrative(
                     f"{_fmt_money(hedge_output.hedge_budget_total)} budget."
                 )
         if len(hedged) < n_holdings:
+            # Not "no affordable hedge": a holding can arrive here because its
+            # instrument class is not built, because none applies to its asset
+            # class, or because a selector failed — none of which is a
+            # statement about price. L4 has already recorded the reason that
+            # is true for each one, and this sentence points at it instead of
+            # choosing one.
             parts.append(
-                f"{n_holdings - len(hedged)} of {n_holdings} holdings have no "
-                f"affordable hedge and are shown unhedged."
+                f"{n_holdings - len(hedged)} of {n_holdings} holdings are "
+                f"shown unhedged; see the warnings on this response for why."
             )
         hedge_output.portfolio_summary = " ".join(parts)
         filled.append("portfolio_summary")
@@ -277,9 +290,14 @@ def _deterministic_narrative(
                 best_rec, best_cand = rec, top
 
         if best_cand is None:
+            # The budget, liquidity and basis-risk screens are only one of the
+            # reasons this list can be empty, and naming them for a run where
+            # no instrument was ever evaluated asserted a financial finding
+            # that had not been made.
             hedge_output.top_recommendation = (
-                "No hedge is recommended: no candidate met the budget, "
-                "liquidity and basis-risk requirements for any holding."
+                "No hedge is recommended: no candidate was available for any "
+                "holding. The warnings on this response give the reason for "
+                "each one."
             )
         else:
             ident = best_cand.contract_symbol or (
@@ -352,6 +370,24 @@ class FinalLLMExplainerEngine:
     ) -> HedgeOutput:
         t0 = time.perf_counter()
 
+        # Nothing to explain: every holding came back with no candidate.
+        #
+        # Asking a model for "the single best hedge action to take now" when
+        # there is no hedge is asking it to invent one, and the prompt's own
+        # rule that every claim must cite a number pushes it toward supplying
+        # a figure. One such run put a "$30,000 AAPL position" in
+        # `top_recommendation` against a `portfolio_notional` of $40,000.
+        # The run still gets a narrative, built from the computed figures,
+        # and `llm_notice` says the model was not called.
+        if not any(rec.candidates for rec in hedge_output.recommendations):
+            logger.info(
+                "L11: no candidate on any holding — skipping the LLM call and "
+                "writing the narrative from the computed figures"
+            )
+            hedge_output.llm_notice = _NO_CANDIDATE_NOTICE
+            _deterministic_narrative(hedge_output, risk_summary, regime)
+            return hedge_output
+
         explainer = get_explainer(provider)
         if not explainer.is_available():
             logger.warning(
@@ -367,23 +403,27 @@ class FinalLLMExplainerEngine:
         risk_by_ticker = _build_risk_profile_lookup(risk_summary)
 
         # Collect (ticker, notional, risk_profile, candidates) for every holding
+        #
+        # The exposure handed to the prompt is the one L3 measured:
+        # `current_price x shares`. This used to prefer
+        # `shares x purchase_price`, which is cost basis, not exposure — for
+        # AAPL bought at 150 and trading at 200 the narrative told the user
+        # they had $30,000 at risk while `portfolio_notional`, VaR and every
+        # sized hedge in the same response were computed on $40,000. The
+        # figure the model is given has to be the figure the product computed,
+        # or the prose contradicts the numbers beside it.
         position_tuples = []
         for rec in hedge_output.recommendations:
             ticker = rec.asset_ticker
             risk_profile = risk_by_ticker.get(ticker)
             if risk_profile is None:
                 continue
-            holding_notional = next(
-                (h.shares * h.purchase_price for h in portfolio.stock_positions
-                 if h.ticker == ticker),
-                None,
-            )
-            if holding_notional is None:
-                holding_notional = next(
-                    (p.notional_value for p in risk_summary.risk_profiles
-                     if p.ticker == ticker),
-                    hedge_output.portfolio_notional,
-                )
+            holding_notional = getattr(risk_profile, "notional_value", None)
+            if not holding_notional:
+                # No measured notional for this holding: say nothing about its
+                # size rather than substitute cost basis for market value.
+                # None travels to the prompt builder, which omits the figure.
+                holding_notional = None
             position_tuples.append((ticker, holding_notional, risk_profile, rec.candidates))
 
         try:

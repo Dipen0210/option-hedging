@@ -191,7 +191,15 @@ class TestNarrativeContent:
             HedgeRecommendation(rank=2, asset_ticker="TLT", candidates=[])
         )
         self._fallback(output=out)
-        assert "1 of 2 holdings have no affordable hedge" in out.portfolio_summary
+        assert "1 of 2 holdings are shown unhedged" in out.portfolio_summary
+
+        # The count is what this test is for; the cause is deliberately not
+        # named. The sentence used to say "no affordable hedge", which is a
+        # price claim — and TLT here has no candidates at all, so nothing was
+        # ever priced for it. The reason belongs to L4, which records the one
+        # that is true per holding, and the summary points at it.
+        assert "affordable" not in out.portfolio_summary
+        assert "see the warnings" in out.portfolio_summary
 
     def test_a_model_priced_premium_is_disclosed_in_the_top_recommendation(self):
         out = _make_hedge_output()
