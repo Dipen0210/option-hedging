@@ -539,3 +539,97 @@ class TestDeploymentConfiguration:
             if re.search(r"(KEY|SECRET|TOKEN|PASSWORD)$", key, re.I) and value.strip():
                 assigned[key] = value
         assert assigned == {}, f"template ships credential values: {list(assigned)}"
+
+
+class TestNoTradeExecutionPath:
+    """
+    OptionQ recommends hedges and never places one.
+
+    The sibling tests above pin that no trading SDK is installed or pinned.
+    These pin the stronger property the user actually relies on: that no code
+    path submits an order, and that nothing in the configuration claims a
+    brokerage link exists. Three `alpaca_*` fields sat in `Settings` with no
+    reader anywhere — not configuration, but a claim, in the one file someone
+    checks to learn what the service connects to.
+    """
+
+    def _repo_root(self):
+        from pathlib import Path
+        return Path(__file__).resolve().parents[2]
+
+    def _source_files(self):
+        root = self._repo_root()
+        for sub in ("backend", "frontend/app", "frontend/components", "frontend/lib"):
+            base = root / sub
+            if not base.exists():
+                continue
+            for pattern in ("*.py", "*.ts", "*.tsx"):
+                for path in base.rglob(pattern):
+                    parts = set(path.parts)
+                    if ".venv" in parts or "node_modules" in parts:
+                        continue
+                    if path.name == "test_security.py":
+                        continue          # this file names the forbidden calls
+                    yield path
+
+    def test_no_settings_field_claims_a_broker_connection(self):
+        from backend.config.settings import Settings
+        offenders = [
+            name for name in Settings.model_fields
+            if any(t in name.lower() for t in
+                   ("alpaca", "broker", "tradier", "oanda", "ibkr"))
+        ]
+        assert offenders == [], f"broker configuration present: {offenders}"
+
+    def test_no_source_file_submits_an_order(self):
+        """
+        An execution call is the one thing that turns a suggestion into a
+        trade, so it is worth failing the build over. Comment lines are exempt:
+        `requirements.txt` and `settings.py` both record in prose why the
+        broker integration is absent, and that prose must stay allowed.
+        """
+        import re
+        forbidden = re.compile(
+            r"\b(submit_order|place_order|create_order|execute_trade|"
+            r"TradingClient|REST\s*\(\s*key_id)",
+            re.I,
+        )
+        offenders = []
+        for path in self._source_files():
+            for n, line in enumerate(path.read_text(errors="replace").splitlines(), 1):
+                stripped = line.strip()
+                if stripped.startswith(("#", "//", "*", "/*")):
+                    continue
+                if forbidden.search(line):
+                    offenders.append(f"{path.relative_to(self._repo_root())}:{n}")
+        assert offenders == [], f"order-submission call present: {offenders}"
+
+    def test_no_route_is_named_for_execution(self, client):
+        """
+        A POST that sounds like it trades is a liability even if it is a stub —
+        the stub endpoints that named a financial cause for an empty result
+        were exactly this failure in a milder form.
+        """
+        from backend.main import app
+        paths = [getattr(r, "path", "") for r in app.routes]
+        offenders = [
+            p for p in paths
+            if any(t in p.lower() for t in
+                   ("/order", "/execute", "/trade", "/buy", "/sell", "/fill"))
+        ]
+        assert offenders == [], f"execution-shaped route exposed: {offenders}"
+
+    def test_the_hedge_response_is_labelled_as_a_suggestion(self):
+        """
+        The output model carries recommendations, not instructions: no field
+        may look like an order ticket a caller could forward to a broker.
+        """
+        from backend.models.hedge_models import HedgeOutput, InstrumentCandidate
+        for model in (HedgeOutput, InstrumentCandidate):
+            offenders = [
+                name for name in model.model_fields
+                if any(t in name.lower() for t in
+                       ("order_id", "client_order", "time_in_force",
+                        "order_type", "filled", "execution"))
+            ]
+            assert offenders == [], f"{model.__name__} has order fields: {offenders}"

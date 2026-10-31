@@ -60,10 +60,11 @@ class Settings(BaseSettings):
     ollama_model: str = "llama3"
     ollama_base_url: str = "http://localhost:11434"
 
-    # Alpaca
-    alpaca_api_key: str = ""
-    alpaca_secret_key: str = ""
-    alpaca_base_url: str = "https://paper-api.alpaca.markets"
+    # No broker credentials are configured, because OptionQ has no execution
+    # path: it produces hedge suggestions and never places an order. Three
+    # Alpaca fields used to sit here. Nothing read them, so they were not
+    # configuration — they were a claim, in the one file a reader checks to
+    # find out what the service connects to, that a brokerage link existed.
 
     # FRED
     fred_api_key: str = ""
